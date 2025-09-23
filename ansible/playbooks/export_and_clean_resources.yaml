@@ -1,0 +1,250 @@
+- name: Export and Clean Kubernetes Resources for a VM
+  hosts: localhost
+  gather_facts: false
+  connection: local
+
+  vars:
+    # --- Git Configuration ---
+    git_ssh_key_path: "{{ lookup('env', 'ANSIBLE_PRIVATE_KEY_FILE') }}"
+    github_user: "kseremet"
+    repo_name: "gitops-vm-dr-manifests"
+    repo_url: "git@github.com:{{ github_user }}/{{ repo_name }}.git" # SSH URL
+    clone_dir: "/tmp/{{ repo_name }}"
+    # This will be passed in from the EDA rulebook's action
+    # vm_object: {}
+    export_dir: "./exported-manifests"
+    noisy_annotation_prefixes:
+      - "kubemacpool.io/"
+      - "kubevirt.io/"
+      - "vm.kubevirt.io/"
+      - "cdi.kubevirt.io/"
+      - "pv.kubernetes.io/"
+    # Flat list of keys to recursively remove from all objects
+    keys_to_remove:
+      - finalizers
+      - status
+      - uid
+      - resourceVersion
+      - creationTimestamp
+      - generation
+      - managedFields
+      - ownerReferences
+      - claimRef
+      - dataSource
+      - dataSourceRef
+
+  tasks:
+    - name: Check if VM is enabled for Disaster Recovery
+      ansible.builtin.meta: end_play
+      when: vm_object.metadata.labels['dr.demojam.com/enabled'] | default('false') != 'true'
+
+    - name: Ensure the export directory exists
+      ansible.builtin.file:
+        path: "{{ export_dir }}"
+        state: directory
+        mode: '0755'
+
+    - name: Extract PVC and DataVolume claim names from the VM spec
+      ansible.builtin.set_fact:
+        pvc_names: >-
+          {{
+            (vm_object.spec.template.spec.volumes |
+            selectattr('persistentVolumeClaim', 'defined') |
+            map(attribute='persistentVolumeClaim.claimName') |
+            list) +
+            (vm_object.spec.template.spec.volumes |
+             selectattr('dataVolume', 'defined') |
+             map(attribute='dataVolume.name') |
+             list)
+          }}
+
+    - debug: var=pvc_names
+
+    - name: Get the full PVC objects
+      kubernetes.core.k8s_info:
+        api_version: v1
+        kind: PersistentVolumeClaim
+        name: "{{ item }}"
+        namespace: "{{ vm_object.metadata.namespace }}"
+      loop: "{{ pvc_names }}"
+      register: pvc_info_list
+
+    - name: Extract PV names from the PVC objects
+      ansible.builtin.set_fact:
+        pv_names: "{{ pvc_info_list.results | map(attribute='resources') | flatten | map(attribute='spec.volumeName') | list }}"
+
+    - debug: var=pv_names
+
+    - name: Get the full PV objects
+      kubernetes.core.k8s_info:
+        api_version: v1
+        kind: PersistentVolume
+        name: "{{ item }}"
+      loop: "{{ pv_names }}"
+      register: pv_info_list
+
+    - name: Perform a shallow clone of the Git repository via SSH
+      ansible.builtin.git:
+        repo: "{{ repo_url }}"
+        dest: "{{ clone_dir }}"
+        depth: 1
+        clone: true
+        update: true
+        key_file: "{{ git_ssh_key_path }}"
+        accept_hostkey: true
+
+    - name: Set facts for file paths and names
+      ansible.builtin.set_fact:
+        namespace: "{{ vm_object.metadata.namespace }}"
+        namespace_dir: "{{ clone_dir }}/vms/base/{{ vm_object.metadata.namespace }}"
+        vm_filename: "vm-{{ vm_object.metadata.name }}.yaml"
+        pvc_filenames: "{{ pvc_info_list.results | map(attribute='resources') | flatten | map(attribute='metadata') | map(attribute='name') | map('regex_replace', '^', 'pvc-') | map('regex_replace', '$', '.yaml') | list }}"
+        pv_filenames: "{{ pv_info_list.results | map(attribute='resources') | flatten | map(attribute='metadata') | map(attribute='name') | map('regex_replace', '^', 'pv-') | map('regex_replace', '$', '.yaml') | list }}"
+
+    - debug: var=pvc_filenames
+    - debug: var=pv_filenames
+
+    # --- Directory and Kustomization File Setup ---
+    - name: Create namespace subdirectory in the base
+      ansible.builtin.file:
+        path: "{{ namespace_dir }}"
+        state: directory
+        mode: '0755'
+
+    - name: Ensure top-level base/kustomization.yaml exists
+      ansible.builtin.copy:
+        content: |
+          apiVersion: kustomize.config.k8s.io/v1beta1
+          kind: Kustomization
+          resources:
+        dest: "{{ clone_dir }}/vms/base/kustomization.yaml"
+        force: false # Will not overwrite if it already exists
+        mode: '0644'
+
+    - name: Ensure namespace-level kustomization.yaml exists
+      ansible.builtin.copy:
+        content: |
+          apiVersion: kustomize.config.k8s.io/v1beta1
+          kind: Kustomization
+          resources:
+        dest: "{{ namespace_dir }}/kustomization.yaml"
+        force: false # Will not overwrite if it already exists
+        mode: '0644'
+
+    - name: Ensure namespace is listed in top-level kustomization.yaml
+      ansible.builtin.lineinfile:
+        path: "{{ clone_dir }}/vms/base/kustomization.yaml"
+        line: "  - {{ namespace }}"
+        insertafter: "^resources:$"
+
+    - name: Clean, label, and export the VirtualMachine object
+      ansible.builtin.copy:
+        content: >-
+          {{
+            vm_object |
+            combine({
+              'metadata': vm_object.metadata | combine({
+                'annotations': (
+                  vm_object.metadata.annotations | default({}) |
+                  ansible.utils.remove_keys(target=noisy_annotation_prefixes, matching_parameter='starts_with')
+                ),
+                'labels': (
+                  vm_object.metadata.labels | default({}) |
+                  combine({
+                    'dr.demojam.com/source-state':
+                      'halted' if vm_object.status.printableStatus == 'Stopped' else 'running',
+                    'dr.demojam.com/power-spec':
+                      'running' if vm_object.spec.running is defined else 'runstrategy'
+                  })
+                )
+              })
+            }) |
+            ansible.utils.remove_keys(target=keys_to_remove) |
+            combine({
+              'spec': vm_object.spec | ansible.utils.remove_keys(target=['running', 'runStrategy'])
+            }) |
+            to_nice_yaml(indent=2)
+          }}
+        dest: "{{ namespace_dir }}/{{ vm_filename }}"
+        mode: '0644'
+
+    - name: Clean and export the PVC objects
+      ansible.builtin.copy:
+        content: >-
+          {{
+            item.0.resources[0] |
+            combine({
+              'metadata': item.0.resources[0].metadata | combine({
+                'annotations': (
+                  item.0.resources[0].metadata.annotations | default({}) |
+                  ansible.utils.remove_keys(target=noisy_annotation_prefixes, matching_parameter='starts_with')
+                )
+              })
+            }) |
+            ansible.utils.remove_keys(target=keys_to_remove) |
+            to_nice_yaml(indent=2)
+          }}
+        dest: "{{ namespace_dir }}/{{ item.1 }}"
+        mode: '0644'
+      loop: "{{ pvc_info_list.results | zip(pvc_filenames) | list }}"
+      loop_control:
+        label: "{{ item.1 }}"
+
+    - name: Clean and export the PV objects
+      ansible.builtin.copy:
+        content: >-
+          {{
+            item.0.resources[0] |
+            combine({
+              'metadata': item.0.resources[0].metadata | combine({
+                'annotations': (
+                  item.0.resources[0].metadata.annotations | default({}) |
+                  ansible.utils.remove_keys(target=noisy_annotation_prefixes, matching_parameter='starts_with')
+                )
+              })
+            }) |
+            ansible.utils.remove_keys(target=keys_to_remove) |
+            to_nice_yaml(indent=2)
+          }}
+        dest: "{{ namespace_dir }}/{{ item.1 }}"
+        mode: '0644'
+      loop: "{{ pv_info_list.results | zip(pv_filenames) | list }}"
+      loop_control:
+        label: "{{ item.1 }}"
+
+    - name: Add all manifest files to the namespace-level kustomization.yaml
+      ansible.builtin.lineinfile:
+        path: "{{ namespace_dir }}/kustomization.yaml"
+        line: "  - {{ item }}"
+        insertafter: "^resources:$"
+      loop: "{{ [vm_filename] + pvc_filenames + pv_filenames }}"
+      loop_control:
+        label: "{{ item }}"
+
+    - name: Check for any changes in the repository
+      ansible.builtin.command: git status --porcelain
+      args:
+        chdir: "{{ clone_dir }}"
+      register: git_status
+      changed_when: git_status.stdout | length > 0
+
+    - name: Add all changes to git staging
+      ansible.builtin.command: git add vms/base/
+      args:
+        chdir: "{{ clone_dir }}"
+      when: git_status.changed
+
+    - name: Commit changes
+      ansible.builtin.command: git commit -m "Automated DR Sync for VM {{ vm_object.metadata.name }}"
+      args:
+        chdir: "{{ clone_dir }}"
+      when: git_status.changed
+
+    - name: Push changes to the remote repository
+      ansible.builtin.shell: git push origin HEAD
+      args:
+        chdir: "{{ clone_dir }}"
+      environment:
+        GIT_SSH_COMMAND: "ssh -i {{ git_ssh_key_path }} -o StrictHostKeyChecking=no"
+      when: git_status.changed
+
