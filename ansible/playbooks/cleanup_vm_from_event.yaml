@@ -1,0 +1,81 @@
+- name: Clean up a single deleted VM from the Git repository
+  hosts: localhost
+  gather_facts: false
+  connection: local
+
+  vars:
+    # --- Git Configuration ---
+    git_ssh_key_path: "{{ lookup('env', 'ANSIBLE_PRIVATE_KEY_FILE') }}"
+    github_user: "kseremet"
+    repo_name: "gitops-vm-dr-manifests"
+    repo_url: "git@github.com:{{ github_user }}/{{ repo_name }}.git" # SSH URL
+
+    # --- Kustomize Configuration ---
+    target_cluster_name: cls2
+    
+  tasks:
+    - name: Create a unique temporary directory for the Git clone
+      ansible.builtin.tempfile:
+        state: directory
+        prefix: "gitops_dr_"
+      register: temp_clone_dir
+
+    - name: Set the clone directory path as a fact
+      ansible.builtin.set_fact:
+        clone_dir: "{{ temp_clone_dir.path }}"
+
+    - name: Perform a shallow clone of the Git repository
+      ansible.builtin.git:
+        repo: "{{ repo_url }}"
+        dest: "{{ clone_dir }}"
+        depth: 1
+        clone: true
+        update: true
+        key_file: "{{ git_ssh_key_path }}"
+        accept_hostkey: true
+
+    - name: Generate the list of manifest files to delete for this VM
+      ansible.builtin.set_fact:
+        # This logic is reused from your GC's filename generation
+        pvc_names: >-
+          {{
+            (event_vm_object.spec.template.spec.volumes |
+            selectattr('persistentVolumeClaim', 'defined') |
+            map(attribute='persistentVolumeClaim.claimName') |
+            list) +
+            (event_vm_object.spec.template.spec.volumes |
+             selectattr('dataVolume', 'defined') |
+             map(attribute='dataVolume.name') |
+             list)
+          }}
+        # Note: We cannot query for PVs as the PVCs are already deleted.
+        # The cleanup logic will have to derive PV info from the Git manifest.
+
+    - name: Create the list of orphan files to process
+      ansible.builtin.set_fact:
+        orphan_files_to_clean: >-
+          {{
+            [ event_vm_object.metadata.namespace + '/vm-' + event_vm_object.metadata.name + '.yaml' ] +
+            (pvc_names | map('regex_replace', '^', event_vm_object.metadata.namespace + '/pvc-') | map('regex_replace', '$', '.yaml') | list)
+          }}
+
+    - name: Display the list of orphan files to process
+      ansible.builtin.debug:
+        var: orphan_files_to_clean
+
+    - fail:
+
+    - name: Process each orphan file for cleanup
+      ansible.builtin.include_tasks:
+        file: tasks/cleanup_orphan_file.yml
+      loop: "{{ orphan_files_to_clean }}"
+      loop_control:
+        loop_var: orphan_file
+        label: "{{ orphan_file }}"
+
+    # ... The logic to check for an empty directory and update kustomization would go here,
+    #     reusing tasks/cleanup_empty_dir.yml ...
+
+    #- name: Commit and push all cleanup changes
+      # ... The final git commit and push tasks go here ...
+

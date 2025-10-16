@@ -1,0 +1,28 @@
+- name: Check if the base directory is now empty
+  ansible.builtin.find:
+    paths: "{{ clone_dir }}/vms/base/{{ namespace_dir }}"
+    file_type: file
+    patterns: "*.yaml"
+    excludes: "kustomization.yaml"
+  register: dir_contents
+
+- name: If directory is empty, remove it and its overlay
+  when: dir_contents.matched == 0
+  block:
+    - name: Remove the empty base directory
+      ansible.builtin.file:
+        path: "{{ clone_dir }}/vms/base/{{ namespace_dir }}"
+        state: absent
+
+    - name: Remove the corresponding overlay directory
+      ansible.builtin.file:
+        path: "{{ clone_dir }}/vms/overlays/{{ target_cluster_name }}/{{ namespace_dir }}"
+        state: absent
+
+    - name: Remove the namespace from the base kustomization.yaml
+      ansible.builtin.lineinfile:
+        path: "{{ clone_dir }}/vms/base/kustomization.yaml"
+        state: absent
+        # This regex finds the line while ignoring variations in whitespace
+        regexp: '^\s*-\s+{{ namespace_dir }}\s*$'
+

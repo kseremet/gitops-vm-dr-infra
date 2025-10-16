@@ -1,0 +1,22 @@
+- name: "Read orphan manifest to get details for storage cleanup"
+  ansible.builtin.set_fact:
+    orphan_object: "{{ lookup('file', clone_dir + '/vms/base/' + orphan_file) | from_yaml }}"
+
+- name: Run storage replication cleanup if orphan is a PV
+  when: "'pv-' in orphan_file"
+  vars:
+    # This map defines which cleanup task file to use for each CSI driver
+    csi_driver_cleanup_task_map:
+      'rook-ceph.rbd.csi.ceph.com': 'cleanup_ceph_replication.yaml'
+      # 'pd.csi.storage.gke.io': 'tasks/cleanup_gcp_replication.yml' # Future addition
+  block:
+    - name: Include storage cleanup tasks based on the PV's CSI driver
+      ansible.builtin.include_tasks:
+        file: "{{ csi_driver_cleanup_task_map[orphan_object.spec.csi.driver] }}"
+      when: orphan_object.spec.csi.driver in csi_driver_cleanup_task_map
+
+- name: Delete the orphan manifest file from the Git clone
+  ansible.builtin.file:
+    path: "{{ clone_dir }}/vms/base/{{ orphan_file }}"
+    state: absent
+

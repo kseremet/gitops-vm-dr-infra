@@ -1,0 +1,108 @@
+- name: Reconcile all DR-enabled VMs and sync to Git
+  hosts: localhost
+  gather_facts: false
+  connection: local
+
+  vars:
+    # --- Git Configuration ---
+    git_ssh_key_path: "{{ lookup('env', 'ANSIBLE_PRIVATE_KEY_FILE') }}"
+    github_user: "kseremet"
+    repo_name: "gitops-vm-dr-manifests"
+    repo_url: "git@github.com:{{ github_user }}/{{ repo_name }}.git" # SSH URL
+    clone_dir: "/tmp/{{ repo_name }}"
+
+    # --- Kustomize Configuration ---
+    target_cluster_name: cls2
+
+    # --- Selector for discovery (optional) ---
+    # Can be passed as an extra var: -e "namespace_selector=environment=prod"
+    namespace_selector: ""
+
+  tasks:
+    - name: Get list of selected namespaces if a selector is provided
+      kubernetes.core.k8s_info:
+        kind: Namespace
+        label_selectors: "{{ (namespace_selector | length > 0) | ternary(namespace_selector.split(','), omit) }}"
+      register: selected_namespaces
+      when: namespace_selector | length > 0
+
+    - name: Get all DR-enabled VMs from selected namespaces
+      kubernetes.core.k8s_info:
+        kind: VirtualMachine
+        api_version: kubevirt.io/v1
+        namespace: "{{ item.metadata.name }}"
+        label_selectors:
+          - "dr.demojam.com/enabled=true"
+      loop: "{{ selected_namespaces.resources }}"
+      loop_control:
+        label: "{{ item.metadata.name }}"
+      register: vm_list_from_selected_ns
+      when: namespace_selector | length > 0
+
+    - name: Get all DR-enabled VMs from ALL namespaces (if namespace selector is not provided)
+      kubernetes.core.k8s_info:
+        kind: VirtualMachine
+        api_version: kubevirt.io/v1
+        label_selectors:
+          - "dr.demojam.com/enabled=true"
+      register: vm_list_from_all_ns
+      when: namespace_selector | length == 0
+
+    - name: Consolidate list of VMs (if selector was used)
+      ansible.builtin.set_fact:
+        vms_to_process: "{{ vm_list_from_selected_ns.results | map(attribute='resources') | flatten }}"
+      when: namespace_selector | length > 0
+
+    - name: Consolidate list of VMs (if no selector was used)
+      ansible.builtin.set_fact:
+        vms_to_process: "{{ vm_list_from_all_ns.resources }}"
+      when: namespace_selector | length == 0
+
+    - name: Exit if no VMs are found to process
+      ansible.builtin.meta: end_play
+      when: vms_to_process | length == 0
+
+    - name: Perform a shallow clone of the Git repository
+      ansible.builtin.git:
+        repo: "{{ repo_url }}"
+        dest: "{{ clone_dir }}"
+        depth: 1
+        clone: true
+        update: true
+        key_file: "{{ git_ssh_key_path }}"
+        accept_hostkey: true
+
+    - name: Process each discovered VM
+      ansible.builtin.include_tasks:
+        file: tasks/process_single_vm.yml
+      loop: "{{ vms_to_process }}"
+      loop_control:
+        loop_var: vm_object
+        label: "{{ vm_object.metadata.name }}"
+
+    - name: Check for any changes in the repository
+      ansible.builtin.command: git status --porcelain
+      args:
+        chdir: "{{ clone_dir }}"
+      register: git_status
+      changed_when: git_status.stdout | length > 0
+
+    - name: Commit and push all changes if any were made
+      when: git_status.changed
+      block:
+        - name: Add all changes to git staging
+          ansible.builtin.command: git add vms
+          args:
+            chdir: "{{ clone_dir }}"
+
+        - name: Commit changes
+          ansible.builtin.command: git commit -m "Automated DR Reconciliation Sync"
+          args:
+            chdir: "{{ clone_dir }}"
+
+        - name: Push changes to the remote repository
+          ansible.builtin.shell: git push origin HEAD
+          args:
+            chdir: "{{ clone_dir }}"
+          environment:
+            GIT_SSH_COMMAND: "ssh -i {{ git_ssh_key_path }} -o StrictHostKeyChecking=no"

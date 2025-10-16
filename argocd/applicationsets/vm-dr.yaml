@@ -1,0 +1,33 @@
+apiVersion: argoproj.io/v1alpha1
+kind: ApplicationSet
+metadata:
+  name: vm-dr-applicationset
+  namespace: argocd
+spec:
+  generators:
+  - clusters:
+      # This selector will find any cluster secret labeled as a DR target
+      selector:
+        matchLabels:
+          dr-target: "true"
+  template:
+    metadata:
+      # Creates an app named e.g., "cls2-vm-dr"
+      name: '{{.name}}-vm-dr'
+    spec:
+      project: default
+      source:
+        repoURL: https://github.com/kseremet/gitops-vm-dr-manifests.git
+        targetRevision: main
+        # This is the crucial part that points to the correct standby overlay for each cluster
+        path: 'vms/overlays/{{.name}}/standby'
+      destination:
+        server: '{{.server}}'
+        # The VMs will be created in their original namespaces, as defined in the manifests
+        namespace: '*'
+      syncPolicy:
+        automated:
+          prune: true
+          selfHeal: true
+        syncOptions:
+        - CreateNamespace=true

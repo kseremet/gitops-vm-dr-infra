@@ -1,0 +1,83 @@
+- name: "Rook-Ceph: Setting up RBD Mirroring for PV {{ pv_object.metadata.name }}"
+  vars:
+    rook_ceph_namespace: "rook-ceph"
+  block:
+    - name: Get the rook-ceph-tools pod
+      kubernetes.core.k8s_info:
+        kind: Pod
+        namespace: "{{ rook_ceph_namespace }}"
+        label_selectors:
+          - app=rook-ceph-tools
+        validate_certs: false
+      register: tools_pod
+
+    - name: Fail if rook-ceph-tools pod is not found
+      ansible.builtin.fail:
+        msg: "The rook-ceph-tools pod was not found in the {{ rook_ceph_namespace }} namespace."
+      when: tools_pod.resources | length == 0
+
+    - name: Set facts for Ceph tools
+      ansible.builtin.set_fact:
+        tools_pod_name: "{{ tools_pod.resources[0].metadata.name }}"
+        rbd_image_name: "{{ pv_object.spec.csi.volumeAttributes.imageName }}"
+        rbd_pool_name: "{{ pv_object.spec.csi.volumeAttributes.pool }}"
+
+    - name: Check image info (for parent and mirroring status)
+      kubernetes.core.k8s_exec:
+        namespace: "{{ rook_ceph_namespace }}"
+        pod: "{{ tools_pod_name }}"
+        command: "rbd info {{ rbd_pool_name }}/{{ rbd_image_name }} --format json"
+        validate_certs: false
+      register: rbd_image_info
+      changed_when: false
+      ignore_errors: true
+
+    - name: Set mirroring status fact
+      ansible.builtin.set_fact:
+        is_mirroring_enabled: "{{ (rbd_image_info.rc == 0 and
+                               'mirroring' in (rbd_image_info.stdout | from_json) and
+                               (rbd_image_info.stdout | from_json).mirroring.state == 'enabled') }}"
+
+    - name: Perform replication setup only if mirroring is not already enabled
+      when: not is_mirroring_enabled
+      block:
+        - name: Flatten the image if it is a clone
+          kubernetes.core.k8s_exec:
+            namespace: "{{ rook_ceph_namespace }}"
+            pod: "{{ tools_pod_name }}"
+            command: "rbd flatten {{ rbd_pool_name }}/{{ rbd_image_name }}"
+            validate_certs: false
+          when: "rbd_image_info.rc == 0 and 'parent' in (rbd_image_info.stdout | from_json)"
+
+        - name: Wait for flatten to complete
+          kubernetes.core.k8s_exec:
+            namespace: "{{ rook_ceph_namespace }}"
+            pod: "{{ tools_pod_name }}"
+            command: "rbd info {{ rbd_pool_name }}/{{ rbd_image_name }} --format json"
+            validate_certs: false
+          register: flatten_check
+          until: "'parent' not in (flatten_check.stdout | from_json)"
+          retries: 30
+          delay: 10
+          changed_when: false
+          when: "rbd_image_info.rc == 0 and 'parent' in (rbd_image_info.stdout | from_json)"
+
+        - name: Enable mirroring for the image in snapshot mode
+          kubernetes.core.k8s_exec:
+            namespace: "{{ rook_ceph_namespace }}"
+            pod: "{{ tools_pod_name }}"
+            command: "rbd mirror image enable {{ rbd_pool_name }}/{{ rbd_image_name }} snapshot"
+            validate_certs: false
+
+        - name: Wait until image mirroring state is healthy
+          kubernetes.core.k8s_exec:
+            namespace: "{{ rook_ceph_namespace }}"
+            pod: "{{ tools_pod_name }}"
+            command: "rbd mirror image status {{ rbd_pool_name }}/{{ rbd_image_name }} --format json"
+            validate_certs: false
+          register: mirror_status
+          until: "(mirror_status.stdout | from_json).peer_sites[0].state == 'up+replaying'"
+          retries: 30
+          delay: 10
+          changed_when: false
+

@@ -1,0 +1,46 @@
+- name: "Rook-Ceph: Disabling RBD Mirroring for orphan PV {{ orphan_object.metadata.name }}"
+  vars:
+    rook_ceph_namespace: "rook-ceph"
+  block:
+    - name: Get the rook-ceph-tools pod
+      kubernetes.core.k8s_info:
+        kind: Pod
+        namespace: "{{ rook_ceph_namespace }}"
+        label_selectors:
+          - app=rook-ceph-tools
+        validate_certs: false
+      register: tools_pod
+
+    - name: Set facts for Ceph tools
+      ansible.builtin.set_fact:
+        tools_pod_name: "{{ tools_pod.resources[0].metadata.name if tools_pod.resources | length > 0 else '' }}"
+        rbd_image_name: "{{ orphan_object.spec.csi.volumeAttributes.imageName }}"
+        rbd_pool_name: "{{ orphan_object.spec.csi.volumeAttributes.pool }}"
+
+    - name: Continue only if tools pod is found
+      when: tools_pod_name | length > 0
+      block:
+        - name: Check image info for mirroring status
+          kubernetes.core.k8s_exec:
+            namespace: "{{ rook_ceph_namespace }}"
+            pod: "{{ tools_pod_name }}"
+            command: "rbd info {{ rbd_pool_name }}/{{ rbd_image_name }} --format json"
+            validate_certs: false
+          register: rbd_info_result
+          changed_when: false
+          ignore_errors: true
+
+        - name: Determine if mirroring is active
+          ansible.builtin.set_fact:
+            mirroring_is_active: "{{ (rbd_info_result.rc == 0 and
+                                      'mirroring' in (rbd_info_result.stdout | from_json) and
+                                      (rbd_info_result.stdout | from_json).mirroring.state == 'enabled') }}"
+
+        - name: Disable mirroring for the image if it is active
+          kubernetes.core.k8s_exec:
+            namespace: "{{ rook_ceph_namespace }}"
+            pod: "{{ tools_pod_name }}"
+            command: "rbd mirror image disable {{ rbd_pool_name }}/{{ rbd_image_name }}"
+            validate_certs: false
+          when: mirroring_is_active
+

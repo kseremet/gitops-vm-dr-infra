@@ -1,0 +1,59 @@
+- name: Watch for VirtualMachine changes for Disaster Recovery
+  hosts: all
+  sources:
+    - kseremet.eda.k8s:
+        api_version: kubevirt.io/v1
+        kind: VirtualMachine
+        namespace: "{{ watch_namespace | default('') }}"
+              
+  rules:
+    # Handle legitimate creates and updates using a passive throttle.
+    - name: Trigger DR sync for new or updated VMs
+      condition: > 
+        event.k8s_event.type in ["ADDED", "MODIFIED"] and 
+        event.k8s_event.object.spec.template is defined
+      
+      throttle:
+        once_after: "30 seconds"
+        group_by_attributes:
+          - event.k8s_event.object.metadata.name
+          - event.k8s_event.object.metadata.namespace
+      
+      actions:
+        # - run_workflow_template:
+        #     name: replicate-vm-to-dr-site
+        #     organization: Default
+        #     job_kwargs:
+        #       extra_vars:
+        #         vm_object: "{{ event.k8s_event.object }}"
+        - debug:
+            msg:
+              - "A new VM named: {{ event.k8s_event.object.metadata.name }} has been created or updated."
+        - run_playbook:
+               name: gitops-vm-dr-infra/ansible/playbooks/export_and_clean_resources.yaml
+               extra_vars:
+                   event_vm_object: "{{ event.k8s_event.object }}"
+
+
+    # Handle the deletion event.
+    - name: Trigger DR cleanup for deleted VMs
+      condition: event.k8s_event.type == "DELETED"
+
+      throttle:
+        once_after: "30 seconds"
+        group_by_attributes:
+          - event.k8s_event.object.metadata.namespace
+
+      actions:
+        # - run_workflow_template:
+        #     name: cleanup-vm-from-dr-site
+        #     organization: Default
+        #     job_kwargs:
+        #       extra_vars:
+        #         vm_object: "{{ event.k8s_event.object }}"
+        - run_playbook:
+               name: gitops-vm-dr-infra/ansible/playbooks/garbage_collector.yaml
+        - debug:
+            msg:
+              - "A VM named: {{ event.k8s_event.object.metadata.name }} has been deleted."
+

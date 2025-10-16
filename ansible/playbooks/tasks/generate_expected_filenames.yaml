@@ -1,0 +1,40 @@
+- name: Extract PVC and DataVolume claim names from the VM spec
+  ansible.builtin.set_fact:
+    pvc_names: >-
+      {{
+        (vm_object.spec.template.spec.volumes |
+        selectattr('persistentVolumeClaim', 'defined') |
+        map(attribute='persistentVolumeClaim.claimName') |
+        list) +
+        (vm_object.spec.template.spec.volumes |
+         selectattr('dataVolume', 'defined') |
+         map(attribute='dataVolume.name') |
+         list)
+      }}
+
+- name: Get the full PVC objects using the lookup dictionary
+  ansible.builtin.set_fact:
+    pvc_objects_for_this_vm: >-
+      {%- set resolved_pvcs = [] -%}
+      {%- for pvc_name in pvc_names -%}
+      {%-   set lookup_key = vm_object.metadata.namespace + '/' + pvc_name -%}
+      {%-   if lookup_key in pvc_lookup_dict -%}
+      {%-     set _ = resolved_pvcs.append(pvc_lookup_dict[lookup_key]) -%}
+      {%-   endif -%}
+      {%- endfor -%}
+      {{ resolved_pvcs }}
+
+- name: Extract PV names from the PVC objects
+  ansible.builtin.set_fact:
+    pv_names: "{{ pvc_objects_for_this_vm | map(attribute='spec.volumeName') | list }}"
+
+- name: Generate the list of manifest filenames for this VM
+  ansible.builtin.set_fact:
+    vm_filename: "{{ vm_object.metadata.namespace }}/vm-{{ vm_object.metadata.name }}.yaml"
+    pvc_filenames: "{{ pvc_objects_for_this_vm | map(attribute='metadata.name') | map('regex_replace', '^', vm_object.metadata.namespace + '/pvc-') | map('regex_replace', '$', '.yaml') | list }}"
+    pv_filenames: "{{ pv_names | map('regex_replace', '^', vm_object.metadata.namespace + '/pv-') | map('regex_replace', '$', '.yaml') | list }}"
+
+- name: Add this VM's filenames to the master list
+  ansible.builtin.set_fact:
+    expected_manifest_filenames: "{{ expected_manifest_filenames + [vm_filename] + pvc_filenames + pv_filenames }}"
+

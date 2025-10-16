@@ -1,0 +1,301 @@
+#
+# This file takes a single `vm_object` as input and exports its cleaned manifests.
+# It is called in a loop by the main reconciler playbook.
+#
+- name: "Processing VM: {{ vm_object.metadata.name }} in namespace {{ vm_object.metadata.namespace }}"
+  vars:
+    # List of noisy annotation prefixes to remove
+    noisy_annotation_prefixes:
+      - "kubemacpool.io/"
+      - "kubevirt.io/"
+      - "vm.kubevirt.io/"
+      - "cdi.kubevirt.io/"
+      - "pv.kubernetes.io/"
+      - "kubectl.kubernetes.io/"
+    # Flat list of other cluster-specific keys to recursively remove
+    keys_to_remove:
+      - finalizers
+      - status
+      - uid
+      - resourceVersion
+      - creationTimestamp
+      - generation
+      - managedFields
+      - ownerReferences
+      - claimRef
+      - dataSource
+      - dataSourceRef
+  block:
+    - name: Perform change-detection for reconciler
+      when: force_sync | default(false) == false
+      block:
+        - name: Set path for the existing manifest in Git
+          ansible.builtin.set_fact:
+            git_manifest_path: "{{ clone_dir }}/vms/base/{{ vm_object.metadata.namespace }}/vm-{{ vm_object.metadata.name }}.yaml"
+
+        - name: Check if the manifest already exists in the Git repo
+          ansible.builtin.stat:
+            path: "{{ git_manifest_path }}"
+          register: git_manifest_stat
+
+        - name: Read existing manifest from Git if it exists
+          ansible.builtin.set_fact:
+            git_vm_object: "{{ lookup('file', git_manifest_path) | from_yaml }}"
+          when: git_manifest_stat.stat.exists
+
+        - name: Determine if a sync is needed based on changes
+          ansible.builtin.set_fact:
+            sync_needed: >-
+              {{ (not git_manifest_stat.stat.exists) or
+                 (git_manifest_stat.stat.exists and
+                  (vm_object.metadata.generation != git_vm_object.metadata.annotations['dr.demojam.com/source-generation'] or
+                   (('halted' if vm_object.status.printableStatus == 'Stopped' else 'running') != git_vm_object.metadata.labels['dr.demojam.com/source-state'])))
+              }}
+              
+    - name: Set sync_needed for forced sync
+      ansible.builtin.set_fact:
+        sync_needed: true
+      when: force_sync | default(false) == true
+
+    - name: Print skip message if no sync is needed and end processing for this VM
+      ansible.builtin.debug:
+        msg: "VM {{ vm_object.metadata.name }} is already in sync. Skipping."
+      when: not sync_needed
+
+    - name: "Perform sync for VM: {{ vm_object.metadata.name }}"
+      when: sync_needed
+      block:
+        - name: Extract PVC and DataVolume claim names from the VM spec
+          ansible.builtin.set_fact:
+            pvc_names: >-
+              {{
+                (vm_object.spec.template.spec.volumes |
+                selectattr('persistentVolumeClaim', 'defined') |
+                map(attribute='persistentVolumeClaim.claimName') |
+                list) +
+                (vm_object.spec.template.spec.volumes |
+                  selectattr('dataVolume', 'defined') |
+                  map(attribute='dataVolume.name') |
+                  list)
+              }}
+
+        - debug: var=pvc_names
+
+        - name: Get the full PVC objects
+          kubernetes.core.k8s_info:
+            api_version: v1
+            kind: PersistentVolumeClaim
+            name: "{{ item }}"
+            namespace: "{{ vm_object.metadata.namespace }}"
+          loop: "{{ pvc_names }}"
+          register: pvc_info_list
+
+        - name: Extract PV names from the PVC objects
+          ansible.builtin.set_fact:
+            pv_names: "{{ pvc_info_list.results | map(attribute='resources') | flatten | map(attribute='spec.volumeName') | list }}"
+
+        - debug: var=pv_names
+
+        - name: Get the full PV objects
+          kubernetes.core.k8s_info:
+            api_version: v1
+            kind: PersistentVolume
+            name: "{{ item }}"
+          loop: "{{ pv_names }}"
+          register: pv_info_list
+
+        - name: Set facts for file paths and names
+          ansible.builtin.set_fact:
+            namespace: "{{ vm_object.metadata.namespace }}"
+            namespace_dir: "{{ clone_dir }}/vms/base/{{ vm_object.metadata.namespace }}"
+            vm_filename: "vm-{{ vm_object.metadata.name }}.yaml"
+            pvc_filenames: "{{ pvc_info_list.results | map(attribute='resources') | flatten | map(attribute='metadata') | map(attribute='name') | map('regex_replace', '^', 'pvc-') | map('regex_replace', '$', '.yaml') | list }}"
+            pv_filenames: "{{ pv_info_list.results | map(attribute='resources') | flatten | map(attribute='metadata') | map(attribute='name') | map('regex_replace', '^', 'pv-') | map('regex_replace', '$', '.yaml') | list }}"
+
+        - debug: var=pvc_filenames
+        - debug: var=pv_filenames
+
+        - name: Set up storage replication for each PV
+          vars:
+            # This map defines which task file to use for each CSI driver
+            csi_driver_task_map:
+              'rook-ceph.rbd.csi.ceph.com': 'setup_ceph_replication.yml'
+              'pd.csi.storage.gke.io': 'setup_gcp_replication.yml'
+          
+          block:
+            - name: Include tasks based on the PV's CSI driver
+              ansible.builtin.include_tasks:
+                file: "{{ csi_driver_task_map[pv_object.spec.csi.driver] }}"
+              # This 'when' condition gracefully skips any drivers not in our map
+              when: pv_object.spec.csi.driver in csi_driver_task_map
+              loop: "{{ pv_info_list.results | map(attribute='resources') | flatten }}"
+              loop_control:
+                loop_var: pv_object
+                label: "{{ pv_object.metadata.name }}"
+
+        # --- Directory and Kustomization File Setup ---
+        - name: Create namespace subdirectory in the base
+          ansible.builtin.file:
+            path: "{{ namespace_dir }}"
+            state: directory
+            mode: '0755'
+
+        - name: Ensure top-level base/kustomization.yaml exists
+          ansible.builtin.copy:
+            content: |
+              apiVersion: kustomize.config.k8s.io/v1beta1
+              kind: Kustomization
+              resources:
+            dest: "{{ clone_dir }}/vms/base/kustomization.yaml"
+            force: false # Will not overwrite if it already exists
+            mode: '0644'
+
+        - name: Ensure namespace-level kustomization.yaml exists
+          ansible.builtin.copy:
+            content: |
+              apiVersion: kustomize.config.k8s.io/v1beta1
+              kind: Kustomization
+              resources:
+            dest: "{{ namespace_dir }}/kustomization.yaml"
+            force: false # Will not overwrite if it already exists
+            mode: '0644'
+
+        - name: Ensure namespace is listed in top-level kustomization.yaml
+          ansible.builtin.lineinfile:
+            path: "{{ clone_dir }}/vms/base/kustomization.yaml"
+            line: "  - {{ namespace }}"
+            insertafter: "^resources:$"
+
+        - name: Ensure Kustomize component directories exist
+          ansible.builtin.file:
+            path: "{{ clone_dir }}/vms/overlays/{{ target_cluster_name }}/components/{{ item }}"
+            state: directory
+            mode: '0755'
+          loop:
+            - standby
+            - failover
+
+        - name: Create Kustomize patch files in component directories
+          ansible.builtin.template:
+            src: "templates/{{ item.src }}"
+            dest: "{{ clone_dir }}/vms/overlays/{{ target_cluster_name }}/components/{{ item.dest }}/{{ item.src | regex_replace('\\.j2$', '') }}"
+            mode: '0644'
+          loop:
+            - { src: 'power-off.yaml.j2', dest: 'standby' }
+            - { src: 'power-on-running.yaml.j2', dest: 'failover' }
+            - { src: 'power-on-runstrategy.yaml.j2', dest: 'failover' }
+
+        - name: Create Kustomize component definitions
+          ansible.builtin.template:
+            src: "templates/{{ item.state }}-component-kustomization.yml.j2"
+            dest: "{{ clone_dir }}/vms/overlays/{{ target_cluster_name }}/components/{{ item.state }}/kustomization.yaml"
+            mode: '0644'
+          loop:
+            - { state: 'standby' }
+            - { state: 'failover' }
+
+        - name: Ensure per-namespace overlay directories exist
+          ansible.builtin.file:
+            path: "{{ clone_dir }}/vms/overlays/{{ target_cluster_name }}/{{ namespace }}/{{ item.state }}"
+            state: directory
+            mode: '0755'
+          loop:
+            - { state: 'standby' }
+            - { state: 'failover' }
+
+        - name: Ensure per-namespace Kustomize overlays exist
+          ansible.builtin.template:
+            src: "templates/{{ item.state }}-overlay-kustomization.yml.j2"
+            dest: "{{ clone_dir }}/vms/overlays/{{ target_cluster_name }}/{{ namespace }}/{{ item.state }}/kustomization.yaml"
+            mode: '0644'
+          loop:
+            - { state: 'standby' }
+            - { state: 'failover' }
+
+        - name: Clean, label, and export the VirtualMachine object
+          ansible.builtin.copy:
+            content: >-
+              {{
+                vm_object |
+                combine({
+                  'metadata': vm_object.metadata | combine({
+                    'annotations': (
+                      vm_object.metadata.annotations | default({}) |
+                      ansible.utils.remove_keys(target=noisy_annotation_prefixes, matching_parameter='starts_with') |
+                      combine({
+                        'dr.demojam.com/source-generation': vm_object.metadata.generation | default(0)
+                      })
+                    ),
+                    'labels': (
+                      vm_object.metadata.labels | default({}) |
+                      combine({
+                        'dr.demojam.com/source-state':
+                          'halted' if vm_object.status.printableStatus == 'Stopped' else 'running',
+                        'dr.demojam.com/power-spec':
+                          'running' if vm_object.spec.running is defined else 'runstrategy'
+                      })
+                    )
+                  })
+                }) |
+                ansible.utils.remove_keys(target=keys_to_remove) |
+                combine({
+                  'spec': vm_object.spec | ansible.utils.remove_keys(target=['running', 'runStrategy'])
+                }) |
+                to_nice_yaml(indent=2)
+              }}
+            dest: "{{ namespace_dir }}/{{ vm_filename }}"
+            mode: '0644'
+
+        - name: Clean and export the PVC objects
+          ansible.builtin.copy:
+            content: >-
+              {{
+                item.0.resources[0] |
+                combine({
+                  'metadata': item.0.resources[0].metadata | combine({
+                    'annotations': (
+                      item.0.resources[0].metadata.annotations | default({}) |
+                      ansible.utils.remove_keys(target=noisy_annotation_prefixes, matching_parameter='starts_with')
+                    )
+                  })
+                }) |
+                ansible.utils.remove_keys(target=keys_to_remove) |
+                to_nice_yaml(indent=2)
+              }}
+            dest: "{{ namespace_dir }}/{{ item.1 }}"
+            mode: '0644'
+          loop: "{{ pvc_info_list.results | zip(pvc_filenames) | list }}"
+          loop_control:
+            label: "{{ item.1 }}"
+
+        - name: Clean and export the PV objects
+          ansible.builtin.copy:
+            content: >-
+              {{
+                item.0.resources[0] |
+                combine({
+                  'metadata': item.0.resources[0].metadata | combine({
+                    'annotations': (
+                      item.0.resources[0].metadata.annotations | default({}) |
+                      ansible.utils.remove_keys(target=noisy_annotation_prefixes, matching_parameter='starts_with')
+                    )
+                  })
+                }) |
+                ansible.utils.remove_keys(target=keys_to_remove) |
+                to_nice_yaml(indent=2)
+              }}
+            dest: "{{ namespace_dir }}/{{ item.1 }}"
+            mode: '0644'
+          loop: "{{ pv_info_list.results | zip(pv_filenames) | list }}"
+          loop_control:
+            label: "{{ item.1 }}"
+
+        - name: Add all manifest files to the namespace-level kustomization.yaml
+          ansible.builtin.lineinfile:
+            path: "{{ namespace_dir }}/kustomization.yaml"
+            line: "  - {{ item }}"
+            insertafter: "^resources:$"
+          loop: "{{ [vm_filename] + pvc_filenames + pv_filenames }}"
+          loop_control:
+            label: "{{ item }}"
+
