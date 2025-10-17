@@ -197,8 +197,6 @@
             dest: "{{ components_dir }}/kustomization.yaml"
             mode: '0644'
 
-        - fail:
-
         - name: Clean, label, and export the VirtualMachine object
           ansible.builtin.copy:
             content: >-
@@ -230,7 +228,7 @@
                 }) |
                 to_nice_yaml(indent=2)
               }}
-            dest: "{{ namespace_dir }}/{{ vm_filename }}"
+            dest: "{{ base_dir }}/{{ vm_filename }}"
             mode: '0644'
 
         - name: Clean and export the PVC objects
@@ -249,7 +247,7 @@
                 ansible.utils.remove_keys(target=keys_to_remove) |
                 to_nice_yaml(indent=2)
               }}
-            dest: "{{ namespace_dir }}/{{ item.1 }}"
+            dest: "{{ base_dir }}/{{ item.1 }}"
             mode: '0644'
           loop: "{{ pvc_info_list.results | zip(pvc_filenames) | list }}"
           loop_control:
@@ -271,7 +269,7 @@
                 ansible.utils.remove_keys(target=keys_to_remove) |
                 to_nice_yaml(indent=2)
               }}
-            dest: "{{ namespace_dir }}/{{ item.1 }}"
+            dest: "{{ base_dir }}/{{ item.1 }}"
             mode: '0644'
           loop: "{{ pv_info_list.results | zip(pv_filenames) | list }}"
           loop_control:
@@ -279,10 +277,9 @@
 
         - name: Add all manifest files to the namespace-level kustomization.yaml
           ansible.builtin.lineinfile:
-            path: "{{ namespace_dir }}/kustomization.yaml"
+            path: "{{ base_dir }}/kustomization.yaml"
             line: "  - {{ item }}"
             insertafter: "^resources:$"
           loop: "{{ [vm_filename] + pvc_filenames + pv_filenames }}"
           loop_control:
             label: "{{ item }}"
-
