@@ -175,8 +175,6 @@
             src: ../templates/namespace_kustomization.yaml.j2
             dest: "{{ overlay_dir }}/kustomization.yaml"
             mode: '0644'
-          vars:
-            namespace: "{{ namespace }}"
 
         - name: Ensure namespace is listed in top-level kustomization.yaml
           ansible.builtin.lineinfile:
