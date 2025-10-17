@@ -8,7 +8,7 @@
     base_dir: "{{ clone_dir }}/vms/base/{{ namespace }}"
     overlay_dir: "{{ clone_dir }}/vms/overlays/{{ target_cluster_name }}/{{ namespace }}"
     components_dir: "{{ clone_dir }}/vms/overlays/{{ target_cluster_name }}/components/failover-control"
-    patches_dir: "{{ clone_dir }}/vms/overlays/{{ target_cluster_name }}/patches"
+    patches_dir: "{{ components_dir }}/patches"
     # List of noisy annotation prefixes to remove
     noisy_annotation_prefixes:
       - "kubemacpool.io/"
