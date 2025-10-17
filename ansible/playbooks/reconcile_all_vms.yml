@@ -56,6 +56,6 @@
 
     - name: Commit and push all reconciliation changes
       ansible.builtin.include_tasks:
-        file: tasks/git_commit_push.yml
+        file: tasks/git_commit_push.yaml
       vars:
         commit_message: "Automated DR Reconciliation Sync"
