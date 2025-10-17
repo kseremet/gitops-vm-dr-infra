@@ -1,0 +1,39 @@
+- name: Ensure top-level directories exist
+  ansible.builtin.file:
+    path: "{{ clone_dir }}/vms/{{ item }}"
+    state: directory
+    mode: '0755'
+  loop:
+    - base
+    - "overlays/{{ target_cluster_name }}/components/failover-control/patches"
+
+- name: Ensure top-level base/kustomization.yaml exists
+  ansible.builtin.copy:
+    content: |
+      apiVersion: kustomize.config.k8s.io/v1beta1
+      kind: Kustomization
+      resources:
+    dest: "{{ clone_dir }}/vms/base/kustomization.yaml"
+    force: false # Will not overwrite if it already exists
+    mode: '0644'
+
+- name: Create or update the top-level ApplicationSet manifest
+  ansible.builtin.template:
+    src: "templates/applicationset.yaml.j2"
+    dest: "{{ clone_dir }}/vms/applicationset.yaml"
+    mode: '0644'
+
+- name: Create or update the central component control panel
+  ansible.builtin.template:
+    src: "templates/component_kustomization.yaml.j2"
+    dest: "{{ clone_dir }}/vms/overlays/{{ target_cluster_name }}/components/failover-control/kustomization.yaml"
+    mode: '0644'
+
+- name: Create or update the reusable power-on/power-off patch files
+  ansible.builtin.template:
+    src: "templates/{{ item }}"
+    dest: "{{ clone_dir }}/vms/overlays/{{ target_cluster_name }}/components/patches/{{ item | regex_replace('\\.j2$', '') }}"
+    mode: '0644'
+  loop:
+    - 'power-off.yaml.j2'
+    - 'power-on.yaml.j2'

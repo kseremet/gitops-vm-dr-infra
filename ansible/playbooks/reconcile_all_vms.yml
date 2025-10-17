@@ -46,6 +46,10 @@
         key_file: "{{ git_ssh_key_path }}"
         accept_hostkey: true
 
+    - name: Initialize the global Git repository structure
+      ansible.builtin.include_tasks:
+        file: tasks/initialize_git_repo.yaml
+
     - name: Process each discovered VM
       ansible.builtin.include_tasks:
         file: tasks/process_single_vm.yml

@@ -7,8 +7,6 @@
     namespace: "{{ vm_object.metadata.namespace }}"
     base_dir: "{{ clone_dir }}/vms/base/{{ namespace }}"
     overlay_dir: "{{ clone_dir }}/vms/overlays/{{ target_cluster_name }}/{{ namespace }}"
-    components_dir: "{{ clone_dir }}/vms/overlays/{{ target_cluster_name }}/components/failover-control"
-    patches_dir: "{{ components_dir }}/patches"
     # List of noisy annotation prefixes to remove
     noisy_annotation_prefixes:
       - "kubemacpool.io/"
@@ -38,24 +36,6 @@
           ansible.builtin.set_fact:
             git_manifest_path: "{{ base_dir }}/vm-{{ vm_object.metadata.name }}.yaml"
 
-        # - name: Check if the manifest already exists in the Git repo
-        #   ansible.builtin.stat:
-        #     path: "{{ git_manifest_path }}"
-        #   register: git_manifest_stat
-
-        # - name: Read existing manifest from Git if it exists
-        #   ansible.builtin.set_fact:
-        #     git_vm_object: "{{ lookup('file', git_manifest_path) | from_yaml }}"
-        #   when: git_manifest_stat.stat.exists
-
-        # - name: Determine if a sync is needed based on changes
-        #   ansible.builtin.set_fact:
-        #     sync_needed: >-
-        #       {{ (not git_manifest_stat.stat.exists) or
-        #          (git_manifest_stat.stat.exists and
-        #           (vm_object.metadata.generation != git_vm_object.metadata.annotations['dr.demojam.com/source-generation'] or
-        #            (('halted' if vm_object.status.printableStatus == 'Stopped' else 'running') != git_vm_object.metadata.labels['dr.demojam.com/source-state'])))
-        #       }}
         - name: Check if manifest exists and get its generation
           ansible.builtin.set_fact:
             git_vm_generation: "{{ (lookup('file', git_manifest_path, errors='ignore') | from_yaml | default({}, true)).metadata.annotations['dr.demojam.com/source-generation'] | default(-1) }}"
@@ -148,24 +128,14 @@
                 label: "{{ pv_object.metadata.name }}"
 
         # --- Directory and Kustomization File Setup ---
-        - name: Ensure base and overlay directories exist
+        - name: Ensure per-namespace base and overlay directories exist
           ansible.builtin.file:
             path: "{{ item }}"
             state: directory
             mode: '0755'
-          loop: ["{{ base_dir }}", "{{ overlay_dir }}", "{{ components_dir }}", "{{ patches_dir }}"]
+          loop: ["{{ base_dir }}", "{{ overlay_dir }}"]
 
-        - name: Ensure top-level base/kustomization.yaml exists
-          ansible.builtin.copy:
-            content: |
-              apiVersion: kustomize.config.k8s.io/v1beta1
-              kind: Kustomization
-              resources:
-            dest: "{{ clone_dir }}/vms/base/kustomization.yaml"
-            force: false # Will not overwrite if it already exists
-            mode: '0644'
-
-        - name: Ensure namespace-level base kustomization.yaml file exists
+        - name: Ensure per-namespace base kustomization.yaml exists
           ansible.builtin.copy:
             content: |
               apiVersion: kustomize.config.k8s.io/v1beta1
@@ -175,7 +145,7 @@
             force: false # Will not overwrite if it already exists
             mode: '0644'
 
-        - name: Ensure overlay kustomization.yaml exists
+        - name: Ensure per-namespace overlay kustomization.yaml exists
           ansible.builtin.template:
             src: ../templates/namespace_kustomization.yaml.j2
             dest: "{{ overlay_dir }}/kustomization.yaml"
@@ -186,21 +156,6 @@
             path: "{{ clone_dir }}/vms/base/kustomization.yaml"
             line: "  - {{ namespace }}"
             insertafter: "^resources:$"
-
-        - name: Create Kustomize patch files in component directories
-          ansible.builtin.template:
-            src: "../templates/{{ item }}"
-            dest: "{{ patches_dir }}/{{ item | regex_replace('\\.j2$', '') }}"
-            mode: '0644'
-          loop:
-            - 'power-off-all.yaml.j2'
-            - 'power-on-all.yaml.j2'
-
-        - name: Create Kustomize component definitions
-          ansible.builtin.template:
-            src: "../templates/component_kustomization.yaml.j2"
-            dest: "{{ components_dir }}/kustomization.yaml"
-            mode: '0644'
 
         - name: Clean, label, and export the VirtualMachine object
           ansible.builtin.copy:

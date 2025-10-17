@@ -5,11 +5,21 @@ kind: Component
 
 patches:
   # Default state: ensure everything is off.
-  - path: patches/power-off-all.yaml
+  - path: patches/power-off.yaml
     target:
       kind: VirtualMachine
       group: kubevirt.io
 
   # --- FAILOVER GROUPS (Activate by uncommenting) ---
-  # - path: ../../patches/power-on-databases.yaml
-  # - path: ../../patches/power-on-frontend.yaml
+
+  # - path: patches/power-on.yaml
+  #   target:
+  #     kind: VirtualMachine
+  #     group: kubevirt.io
+  #     labelSelector: "app-tier=database"
+
+  # - path: patches/power-on.yaml
+  #   target:
+  #     kind: VirtualMachine
+  #     group: kubevirt.io
+  #     labelSelector: "app=billing-frontend"
