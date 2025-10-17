@@ -65,7 +65,7 @@
 
         - name: Determine if a sync is needed based on generation
           ansible.builtin.set_fact:
-            sync_needed: "{{ vm_object.metadata.generation != git_vm_generation }}"
+            sync_needed: "{{ vm_object.metadata.generation|int != git_vm_generation|int }}"
 
         - debug: var=sync_needed
 
