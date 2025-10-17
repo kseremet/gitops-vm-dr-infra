@@ -1,8 +1,0 @@
-apiVersion: kubevirt.io/v1
-kind: VirtualMachine
-metadata:
-  name: not-important
-spec:
-  # 'Always' is a common runStrategy for ensuring a VM is on.
-  # You could also restore the original value if needed.
-  runStrategy: RerunOnFailure

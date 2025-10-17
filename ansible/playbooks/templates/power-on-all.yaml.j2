@@ -1,0 +1,8 @@
+apiVersion: kubevirt.io/v1
+kind: VirtualMachine
+metadata:
+  name: not-important
+spec:
+  # Selected 'RerunOnFailure' because it is a common runStrategy for ensuring a VM is on.
+  # You could also change the runStrategy if needed.
+  runStrategy: RerunOnFailure

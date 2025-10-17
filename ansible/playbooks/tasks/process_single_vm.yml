@@ -4,6 +4,11 @@
 #
 - name: "Processing VM: {{ vm_object.metadata.name }} in namespace {{ vm_object.metadata.namespace }}"
   vars:
+    namespace: "{{ vm_object.metadata.namespace }}"
+    base_dir: "{{ clone_dir }}/vms/base/{{ namespace }}"
+    overlay_dir: "{{ clone_dir }}/vms/overlays/{{ target_cluster_name }}/{{ namespace }}"
+    components_dir: "{{ clone_dir }}/vms/overlays/{{ target_cluster_name }}/components/failover-control"
+    patches_dir: "{{ clone_dir }}/vms/overlays/{{ target_cluster_name }}/patches"
     # List of noisy annotation prefixes to remove
     noisy_annotation_prefixes:
       - "kubemacpool.io/"
@@ -31,27 +36,34 @@
       block:
         - name: Set path for the existing manifest in Git
           ansible.builtin.set_fact:
-            git_manifest_path: "{{ clone_dir }}/vms/base/{{ vm_object.metadata.namespace }}/vm-{{ vm_object.metadata.name }}.yaml"
+            git_manifest_path: "{{ base_dir }}/vm-{{ vm_object.metadata.name }}.yaml"
 
-        - name: Check if the manifest already exists in the Git repo
-          ansible.builtin.stat:
-            path: "{{ git_manifest_path }}"
-          register: git_manifest_stat
+        # - name: Check if the manifest already exists in the Git repo
+        #   ansible.builtin.stat:
+        #     path: "{{ git_manifest_path }}"
+        #   register: git_manifest_stat
 
-        - name: Read existing manifest from Git if it exists
+        # - name: Read existing manifest from Git if it exists
+        #   ansible.builtin.set_fact:
+        #     git_vm_object: "{{ lookup('file', git_manifest_path) | from_yaml }}"
+        #   when: git_manifest_stat.stat.exists
+
+        # - name: Determine if a sync is needed based on changes
+        #   ansible.builtin.set_fact:
+        #     sync_needed: >-
+        #       {{ (not git_manifest_stat.stat.exists) or
+        #          (git_manifest_stat.stat.exists and
+        #           (vm_object.metadata.generation != git_vm_object.metadata.annotations['dr.demojam.com/source-generation'] or
+        #            (('halted' if vm_object.status.printableStatus == 'Stopped' else 'running') != git_vm_object.metadata.labels['dr.demojam.com/source-state'])))
+        #       }}
+        - name: Check if manifest exists and get its generation
           ansible.builtin.set_fact:
-            git_vm_object: "{{ lookup('file', git_manifest_path) | from_yaml }}"
-          when: git_manifest_stat.stat.exists
+            git_vm_generation: "{{ (lookup('file', git_manifest_path, errors='ignore') | from_yaml | default({}, true)).metadata.annotations['dr.demojam.com/source-generation'] | default(-1) }}"
 
-        - name: Determine if a sync is needed based on changes
+        - name: Determine if a sync is needed based on generation
           ansible.builtin.set_fact:
-            sync_needed: >-
-              {{ (not git_manifest_stat.stat.exists) or
-                 (git_manifest_stat.stat.exists and
-                  (vm_object.metadata.generation != git_vm_object.metadata.annotations['dr.demojam.com/source-generation'] or
-                   (('halted' if vm_object.status.printableStatus == 'Stopped' else 'running') != git_vm_object.metadata.labels['dr.demojam.com/source-state'])))
-              }}
-              
+            sync_needed: "{{ vm_object.metadata.generation != git_vm_generation }}"
+
     - name: Set sync_needed for forced sync
       ansible.builtin.set_fact:
         sync_needed: true
@@ -106,8 +118,6 @@
 
         - name: Set facts for file paths and names
           ansible.builtin.set_fact:
-            namespace: "{{ vm_object.metadata.namespace }}"
-            namespace_dir: "{{ clone_dir }}/vms/base/{{ vm_object.metadata.namespace }}"
             vm_filename: "vm-{{ vm_object.metadata.name }}.yaml"
             pvc_filenames: "{{ pvc_info_list.results | map(attribute='resources') | flatten | map(attribute='metadata') | map(attribute='name') | map('regex_replace', '^', 'pvc-') | map('regex_replace', '$', '.yaml') | list }}"
             pv_filenames: "{{ pv_info_list.results | map(attribute='resources') | flatten | map(attribute='metadata') | map(attribute='name') | map('regex_replace', '^', 'pv-') | map('regex_replace', '$', '.yaml') | list }}"
@@ -121,7 +131,6 @@
             csi_driver_task_map:
               'rook-ceph.rbd.csi.ceph.com': 'setup_ceph_replication.yml'
               'pd.csi.storage.gke.io': 'setup_gcp_replication.yml'
-          
           block:
             - name: Include tasks based on the PV's CSI driver
               ansible.builtin.include_tasks:
@@ -134,11 +143,12 @@
                 label: "{{ pv_object.metadata.name }}"
 
         # --- Directory and Kustomization File Setup ---
-        - name: Create namespace subdirectory in the base
+        - name: Ensure base and overlay directories exist
           ansible.builtin.file:
-            path: "{{ namespace_dir }}"
+            path: "{{ item }}"
             state: directory
             mode: '0755'
+          loop: ["{{ base_dir }}", "{{ overlay_dir }}", "{{ components_dir }}", "{{ patches_dir }}"]
 
         - name: Ensure top-level base/kustomization.yaml exists
           ansible.builtin.copy:
@@ -150,15 +160,23 @@
             force: false # Will not overwrite if it already exists
             mode: '0644'
 
-        - name: Ensure namespace-level kustomization.yaml exists
+        - name: Ensure namespace-level base kustomization.yaml file exists
           ansible.builtin.copy:
             content: |
               apiVersion: kustomize.config.k8s.io/v1beta1
               kind: Kustomization
               resources:
-            dest: "{{ namespace_dir }}/kustomization.yaml"
+            dest: "{{ base_dir }}/kustomization.yaml"
             force: false # Will not overwrite if it already exists
             mode: '0644'
+
+        - name: Ensure overlay kustomization.yaml exists
+          ansible.builtin.template:
+            src: ../templates/namespace_kustomization.yaml.j2
+            dest: "{{ overlay_dir }}/kustomization.yaml"
+            mode: '0644'
+          vars:
+            namespace: "{{ namespace }}"
 
         - name: Ensure namespace is listed in top-level kustomization.yaml
           ansible.builtin.lineinfile:
@@ -166,51 +184,22 @@
             line: "  - {{ namespace }}"
             insertafter: "^resources:$"
 
-        - name: Ensure Kustomize component directories exist
-          ansible.builtin.file:
-            path: "{{ clone_dir }}/vms/overlays/{{ target_cluster_name }}/components/{{ item }}"
-            state: directory
-            mode: '0755'
-          loop:
-            - standby
-            - failover
-
         - name: Create Kustomize patch files in component directories
           ansible.builtin.template:
-            src: "templates/{{ item.src }}"
-            dest: "{{ clone_dir }}/vms/overlays/{{ target_cluster_name }}/components/{{ item.dest }}/{{ item.src | regex_replace('\\.j2$', '') }}"
+            src: "../templates/{{ item }}"
+            dest: "{{ patches_dir }}/{{ item | regex_replace('\\.j2$', '') }}"
             mode: '0644'
           loop:
-            - { src: 'power-off.yaml.j2', dest: 'standby' }
-            - { src: 'power-on-running.yaml.j2', dest: 'failover' }
-            - { src: 'power-on-runstrategy.yaml.j2', dest: 'failover' }
+            - 'power-off-all.yaml.j2'
+            - 'power-on-all.yaml.j2'
 
         - name: Create Kustomize component definitions
           ansible.builtin.template:
-            src: "templates/{{ item.state }}-component-kustomization.yml.j2"
-            dest: "{{ clone_dir }}/vms/overlays/{{ target_cluster_name }}/components/{{ item.state }}/kustomization.yaml"
+            src: "../templates/component_kustomization.yaml.j2"
+            dest: "{{ components_dir }}/kustomization.yaml"
             mode: '0644'
-          loop:
-            - { state: 'standby' }
-            - { state: 'failover' }
 
-        - name: Ensure per-namespace overlay directories exist
-          ansible.builtin.file:
-            path: "{{ clone_dir }}/vms/overlays/{{ target_cluster_name }}/{{ namespace }}/{{ item.state }}"
-            state: directory
-            mode: '0755'
-          loop:
-            - { state: 'standby' }
-            - { state: 'failover' }
-
-        - name: Ensure per-namespace Kustomize overlays exist
-          ansible.builtin.template:
-            src: "templates/{{ item.state }}-overlay-kustomization.yml.j2"
-            dest: "{{ clone_dir }}/vms/overlays/{{ target_cluster_name }}/{{ namespace }}/{{ item.state }}/kustomization.yaml"
-            mode: '0644'
-          loop:
-            - { state: 'standby' }
-            - { state: 'failover' }
+        - fail:
 
         - name: Clean, label, and export the VirtualMachine object
           ansible.builtin.copy:

@@ -1,0 +1,12 @@
+# This is the central control panel for DR failover.
+# To fail over a group of VMs, create the patch file in patches directory and uncomment the corresponding patch here.
+apiVersion: kustomize.config.k8s.io/v1alpha1
+kind: Component
+
+patches:
+  # Default state: ensure everything is off.
+  - path: ../patches/power-off-all.yaml
+
+  # --- FAILOVER GROUPS (Activate by uncommenting) ---
+  # - path: ../../patches/power-on-databases.yaml
+  # - path: ../../patches/power-on-frontend.yaml
