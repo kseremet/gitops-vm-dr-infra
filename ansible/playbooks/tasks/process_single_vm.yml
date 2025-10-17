@@ -60,6 +60,9 @@
           ansible.builtin.set_fact:
             git_vm_generation: "{{ (lookup('file', git_manifest_path, errors='ignore') | from_yaml | default({}, true)).metadata.annotations['dr.demojam.com/source-generation'] | default(-1) }}"
 
+        - debug:
+            msg: "Git VM Generation {{ git_vm_generation }}, Live VM Generation {{ vm_object.metadata.generation }}"
+            
         - name: Determine if a sync is needed based on generation
           ansible.builtin.set_fact:
             sync_needed: "{{ vm_object.metadata.generation != git_vm_generation }}"
