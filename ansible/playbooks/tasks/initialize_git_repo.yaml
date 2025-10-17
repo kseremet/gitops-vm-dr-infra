@@ -32,7 +32,7 @@
 - name: Create or update the reusable power-on/power-off patch files
   ansible.builtin.template:
     src: "templates/{{ item }}"
-    dest: "{{ clone_dir }}/vms/overlays/{{ target_cluster_name }}/components/patches/{{ item | regex_replace('\\.j2$', '') }}"
+    dest: "{{ clone_dir }}/vms/overlays/{{ target_cluster_name }}/components/failover-control/patches/{{ item | regex_replace('\\.j2$', '') }}"
     mode: '0644'
   loop:
     - 'power-off.yaml.j2'
