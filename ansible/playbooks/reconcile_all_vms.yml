@@ -54,7 +54,6 @@
         loop_var: vm_object
         label: "{{ vm_object.metadata.namespace }}/{{ vm_object.metadata.name }}"
 
-    - fail:
     - name: Commit and push all reconciliation changes
       ansible.builtin.include_tasks:
         file: tasks/git_commit_push.yml
