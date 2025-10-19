@@ -34,7 +34,6 @@
                extra_vars:
                    event_vm_object: "{{ event.k8s_event.object }}"
 
-
     # Handle the deletion event.
     - name: Trigger DR cleanup for deleted VMs
       condition: event.k8s_event.type == "DELETED"
@@ -56,4 +55,3 @@
         - debug:
             msg:
               - "A VM named: {{ event.k8s_event.object.metadata.name }} has been deleted."
-
