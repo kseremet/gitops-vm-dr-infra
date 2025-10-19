@@ -58,8 +58,7 @@
     # --- Filter VMs based on selector ---
     - name: Parse the provided VM selector string into a dictionary
       ansible.builtin.set_fact:
-        selector_dict: "{{ dict(vm_selector.split(',') | map('map', 'trim') | map('split', '=', 1)) if vm_selector | length > 0 else {} }}"
-
+        selector_dict: "{{ dict(vm_selector.split(',') | map('trim') | map('split', '=', 1)) if vm_selector | length > 0 else {} }}"
     - debug: var=selector_dict
 
     - name: Filter VMs based on the selector
