@@ -61,12 +61,21 @@
         selector_dict: "{{ dict(vm_selector.split(',') | map('trim') | map('split', '=', 1)) if vm_selector | length > 0 else {} }}"
     - debug: var=selector_dict
 
-    - name: Filter VMs based on the selector
+    - name: Initialize list of VMs to fail over
       ansible.builtin.set_fact:
-        vms_to_failover: "{{ all_git_vms | select('labels_match_selector', selector_dict) | list }}"
-      vars:
-        # Custom Jinja2 test to check if labels contain all selector items
-        labels_match_selector: "{{ lambda vm_obj, selector: selector.items() <= (vm_obj.metadata.labels | default({})).items() }}"
+        vms_to_failover: []
+
+    - name: Filter VMs based on the selector (using loop and when)
+      ansible.builtin.set_fact:
+        vms_to_failover: "{{ vms_to_failover + [vm] }}"
+      loop: "{{ all_git_vms }}"
+      loop_control:
+        loop_var: vm
+        label: "{{ vm.metadata.namespace }}/{{ vm.metadata.name }}"
+      when:
+        # Always include if no selector is given OR check if selector is a subset of labels
+        - vm_selector | length == 0 or
+          selector_dict.items() <= (vm.metadata.labels | default({})).items()
 
     - debug: var=vms_to_failover
     - fail:
