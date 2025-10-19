@@ -1,0 +1,112 @@
+- name: Perform Disaster Recovery Storage Failover for selected VMs
+  hosts: localhost
+  gather_facts: false
+  connection: local
+
+  vars:
+    # --- Git Configuration ---
+    git_ssh_key_path: "{{ lookup('env', 'ANSIBLE_PRIVATE_KEY_FILE') }}"
+    github_user: "kseremet"
+    repo_name: "gitops-vm-dr-manifests"
+    repo_url: "git@github.com:{{ github_user }}/{{ repo_name }}.git" # SSH URL
+
+    # The label selector to target specific VMs for failover
+    # Passed as extra var: -e "vm_selector='app-tier=database,region=emea'"
+    # If empty or not provided, playbook will target all VMs found in Git.
+    vm_selector: ""
+
+    # Map of CSI drivers to their promotion task files
+    csi_driver_promote_task_map:
+      'rook-ceph.rbd.csi.ceph.com': 'tasks/promote_ceph_replication.yaml'
+      # 'pd.csi.storage.gke.io': 'tasks/promote_gcp_replication.yml' # Future addition
+
+  tasks:
+    - name: Create a unique temporary directory for the Git clone
+      ansible.builtin.tempfile:
+        state: directory
+        prefix: "gitops_dr_failover_"
+      register: temp_clone_dir
+
+    - name: Set clone_dir fact
+      ansible.builtin.set_fact:
+        clone_dir: "{{ temp_clone_dir.path }}"
+
+    - name: Perform a shallow clone of the Git repository
+      ansible.builtin.git:
+        repo: "{{ repo_url }}"
+        dest: "{{ clone_dir }}"
+        depth: 1
+        clone: true
+        update: true
+        key_file: "{{ git_ssh_key_path }}"
+        accept_hostkey: true
+
+    - name: Find all VM manifest files in the Git repository
+      ansible.builtin.find:
+        paths: "{{ clone_dir }}/vms/base/"
+        patterns: "vm-*.yaml"
+        recurse: true
+      register: git_vm_files
+
+    - name: Read and parse all VM manifests from Git
+      ansible.builtin.set_fact:
+        all_git_vms: |
+          [{% for file in git_vm_files.files %}
+          {{ lookup('file', file.path) | from_yaml | to_json }}{% if not loop.last %},{% endif %}
+          {% endfor %}]
+
+    # --- Filter VMs based on selector ---
+    - name: Parse the provided VM selector string into a dictionary
+      ansible.builtin.set_fact:
+        selector_dict: "{{ dict(vm_selector.split(',') | map('map', 'trim') | map('split', '=', 1)) if vm_selector | length > 0 else {} }}"
+
+    - debug: var=selector_dict
+
+    - name: Filter VMs based on the selector
+      ansible.builtin.set_fact:
+        vms_to_failover: "{{ all_git_vms | select('match_labels', selector_dict) | list }}"
+      vars:
+        # Helper filter to check if labels are a superset
+        match_labels: "{{ lambda labels, selector: selector.items() <= (labels.metadata.labels | default({})).items() }}"
+
+    - debug: var=vms_to_failover
+    - fail:
+    - name: Exit if no matching VMs are found
+      ansible.builtin.fail:
+        msg: "No VMs found in the Git repository matching the selector '{{ vm_selector }}'"
+      when: vms_to_failover | length == 0
+
+    - name: Extract PVC names for the selected VMs
+      ansible.builtin.set_fact:
+        pvc_names_to_find: "{{ vms_to_failover | map(attribute='spec.template.spec.volumes') | flatten | selectattr('persistentVolumeClaim', 'defined') | map(attribute='persistentVolumeClaim.claimName') | list + vms_to_failover | map(attribute='spec.template.spec.volumes') | flatten | selectattr('dataVolume', 'defined') | map(attribute='dataVolume.name') | list | unique }}"
+
+    - name: Find all PV manifest files in the Git repository
+      ansible.builtin.find:
+        paths: "{{ clone_dir }}/vms/base/"
+        patterns: "pv-*.yaml"
+        recurse: true
+      register: git_pv_files
+
+    - name: Read and parse all PV manifests from Git
+      ansible.builtin.set_fact:
+        all_git_pvs: |
+          [{% for file in git_pv_files.files %}
+          {{ lookup('file', file.path) | from_yaml | to_json }}{% if not loop.last %},{% endif %}
+          {% endfor %}]
+
+    - name: Filter PVs associated with the selected VMs
+      ansible.builtin.set_fact:
+        pvs_to_promote: "{{ all_git_pvs | selectattr('spec.claimRef.name', 'in', pvc_names_to_find) | list }}"
+
+    - name: Promote storage for each selected PV
+      ansible.builtin.include_tasks:
+        file: "{{ csi_driver_promote_task_map[pv_object.spec.csi.driver] }}"
+      when: pv_object.spec.csi.driver in csi_driver_promote_task_map
+      loop: "{{ pvs_to_promote }}"
+      loop_control:
+        loop_var: pv_object
+        label: "{{ pv_object.metadata.name }}"
+
+    - name: "SUCCESS: Storage promotion complete for selected VMs"
+      ansible.builtin.debug:
+        msg: "The data plane is ready for VMs matching selector '{{ vm_selector }}'. You can now update the failover-control Kustomization file in Git."
