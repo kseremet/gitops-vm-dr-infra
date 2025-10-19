@@ -65,7 +65,7 @@
       ansible.builtin.set_fact:
         vms_to_failover: []
 
-    - name: Filter VMs based on the selector (using loop and when)
+    - name: Filter VMs based on the selector
       ansible.builtin.set_fact:
         vms_to_failover: "{{ vms_to_failover + [vm] }}"
       loop: "{{ all_git_vms }}"
@@ -77,8 +77,6 @@
         - vm_selector | length == 0 or
           selector_dict.items() <= (vm.metadata.labels | default({})).items()
 
-    - debug: var=vms_to_failover
-    - fail:
     - name: Exit if no matching VMs are found
       ansible.builtin.fail:
         msg: "No VMs found in the Git repository matching the selector '{{ vm_selector }}'"
@@ -88,6 +86,8 @@
       ansible.builtin.set_fact:
         pvc_names_to_find: "{{ vms_to_failover | map(attribute='spec.template.spec.volumes') | flatten | selectattr('persistentVolumeClaim', 'defined') | map(attribute='persistentVolumeClaim.claimName') | list + vms_to_failover | map(attribute='spec.template.spec.volumes') | flatten | selectattr('dataVolume', 'defined') | map(attribute='dataVolume.name') | list | unique }}"
 
+    - debug: var=pvc_names_to_find
+    - fail:
     - name: Find all PV manifest files in the Git repository
       ansible.builtin.find:
         paths: "{{ clone_dir }}/vms/base/"
