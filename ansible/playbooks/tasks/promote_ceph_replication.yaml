@@ -1,0 +1,72 @@
+- name: "Rook-Ceph: Promoting RBD Image for PV {{ pv_object.metadata.name }}"
+  vars:
+    # IMPORTANT: These tasks run against the DR cluster's Rook deployment
+    rook_ceph_namespace: "rook-ceph"
+  block:
+    - name: Get the rook-ceph-tools pod on the DR cluster
+      kubernetes.core.k8s_info:
+        kind: Pod
+        namespace: "{{ rook_ceph_namespace }}"
+        label_selectors:
+          - app=rook-ceph-tools
+        validate_certs: false
+      register: tools_pod
+
+    - name: Fail if tools pod not found on DR cluster
+      ansible.builtin.fail:
+        msg: "Rook tools pod not found in {{ rook_ceph_namespace }} on DR cluster."
+      when: tools_pod.resources | length == 0
+
+    - name: Set facts for Ceph tools
+      ansible.builtin.set_fact:
+        tools_pod_name: "{{ tools_pod.resources[0].metadata.name }}"
+        # Extract details from the PV object passed in
+        rbd_image_name: "{{ pv_object.spec.csi.volumeAttributes.imageName }}"
+        rbd_pool_name: "{{ pv_object.spec.csi.volumeAttributes.pool }}"
+
+    - name: Check image info to see if promotion is needed
+      kubernetes.core.k8s_exec:
+        namespace: "{{ rook_ceph_namespace }}"
+        pod: "{{ tools_pod_name }}"
+        command: "rbd info {{ rbd_pool_name }}/{{ rbd_image_name }} --format json"
+        validate_certs: false
+      register: rbd_info_result
+      changed_when: false
+      ignore_errors: true # Image might not exist yet if replication hasn't started fully
+
+    - name: Determine if image is currently secondary
+      ansible.builtin.set_fact:
+        is_secondary: "{{ (rbd_info_result.rc == 0 and
+                           'mirroring' in (rbd_info_result.stdout | from_json) and
+                           (rbd_info_result.stdout | from_json).mirroring is defined and # Check if mirroring key exists
+                           (rbd_info_result.stdout | from_json).mirroring.primary == false) }}" # Check if primary is false
+
+    - name: Force promote the RBD image if it is secondary
+      kubernetes.core.k8s_exec:
+        namespace: "{{ rook_ceph_namespace }}"
+        pod: "{{ tools_pod_name }}"
+        command: "rbd mirror image promote {{ rbd_pool_name }}/{{ rbd_image_name }} --force"
+        validate_certs: false
+      when: is_secondary
+      register: promote_result
+
+    - name: Wait for image to become primary after promotion
+      kubernetes.core.k8s_exec:
+        namespace: "{{ rook_ceph_namespace }}"
+        pod: "{{ tools_pod_name }}"
+        command: "rbd info {{ rbd_pool_name }}/{{ rbd_image_name }} --format json"
+        validate_certs: false
+      register: promotion_status
+      # Ensure mirroring exists and primary is true
+      until: >-
+        (promotion_status.stdout | from_json).mirroring is defined and
+        (promotion_status.stdout | from_json).mirroring.primary == true
+      retries: 30
+      delay: 5
+      changed_when: false
+      when: is_secondary and promote_result.rc == 0 # Only wait if promotion was attempted
+
+    - name: Log success
+      ansible.builtin.debug:
+        msg: "Successfully promoted RBD image: {{ rbd_pool_name }}/{{ rbd_image_name }}"
+      when: is_secondary and promote_result.rc == 0
