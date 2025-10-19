@@ -61,7 +61,7 @@
     - name: Create a unique temporary directory for the Git clone
       ansible.builtin.tempfile:
         state: directory
-        prefix: "gitops_dr_reconciler_"
+        prefix: "gitops_dr_garbage_collector_"
       register: temp_clone_dir
 
     - name: Set clone_dir fact
