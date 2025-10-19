@@ -73,4 +73,4 @@
       ansible.builtin.include_tasks:
         file: tasks/git_commit_push.yaml
       vars:
-        commit_message: "Event Driven DR Sync"
+        commit_message: "Automated GC: Cleaned up orphan resources"
