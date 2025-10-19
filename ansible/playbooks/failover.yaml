@@ -61,12 +61,12 @@
         selector_dict: "{{ dict(vm_selector.split(',') | map('trim') | map('split', '=', 1)) if vm_selector | length > 0 else {} }}"
     - debug: var=selector_dict
 
-    - name: Filter VMs based on the selector (using select filter)
+    - name: Filter VMs based on the selector
       ansible.builtin.set_fact:
         vms_to_failover: "{{ all_git_vms | select('labels_match_selector', selector_dict) | list }}"
       vars:
         # Custom Jinja2 test to check if labels contain all selector items
-        labels_match_selector: "{{ lambda labels, selector: selector.items() <= (labels.metadata.labels | default({})).items() }}"
+        labels_match_selector: "{{ lambda vm_obj, selector: selector.items() <= (vm_obj.metadata.labels | default({})).items() }}"
 
     - debug: var=vms_to_failover
     - fail:
