@@ -99,6 +99,28 @@
 
     - debug: var=pvc_names_to_find
 
+    - name: Find all PVC manifest files in the Git repository
+      ansible.builtin.find:
+        paths: "{{ clone_dir }}/vms/base/"
+        patterns: "pvc-*.yaml"
+        recurse: true
+      register: git_pvc_files
+
+    - name: Read and parse all PVC manifests relevant to selected VMs
+      ansible.builtin.set_fact:
+        # Build a dictionary of {pvc_name: pvc_object} for easy lookup
+        pvc_manifests_dict: |
+          {% set pvc_dict = {} %}
+          {% for file in git_pvc_files.files %}
+          {%   set pvc_obj = lookup('file', file.path) | from_yaml %}
+          {%   if pvc_obj.metadata.name in pvc_names_to_find %}
+          {%     set _ = pvc_dict.update({pvc_obj.metadata.name: pvc_obj}) %}
+          {%   endif %}
+          {% endfor %}
+          {{ pvc_dict }}
+
+    - debug: var=pvc_manifests_dict
+    - fail:
     - name: Find all PV manifest files in the Git repository
       ansible.builtin.find:
         paths: "{{ clone_dir }}/vms/base/"
