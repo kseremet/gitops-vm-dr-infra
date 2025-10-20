@@ -26,13 +26,19 @@
         #     job_kwargs:
         #       extra_vars:
         #         vm_object: "{{ event.k8s_event.object }}"
+        # - run_playbook:
+        #        name: gitops-vm-dr-infra/ansible/playbooks/export_and_clean_resources.yaml
+        #        extra_vars:
+        #            event_vm_object: "{{ event.k8s_event.object }}"
         - debug:
             msg:
               - "A new VM named: {{ event.k8s_event.object.metadata.name }} has been created or updated."
-        - run_playbook:
-               name: gitops-vm-dr-infra/ansible/playbooks/export_and_clean_resources.yaml
-               extra_vars:
-                   event_vm_object: "{{ event.k8s_event.object }}"
+        - run_job_template:
+            name: GitOps Based VM DR Automation - Process VM Update Event
+            organization: Default
+            job_args:
+              extra_vars:
+                vm_object: "{{ event.k8s_event.object }}"
 
     # Handle the deletion event.
     - name: Trigger DR cleanup for deleted VMs
@@ -50,8 +56,15 @@
         #     job_kwargs:
         #       extra_vars:
         #         vm_object: "{{ event.k8s_event.object }}"
-        - run_playbook:
-               name: gitops-vm-dr-infra/ansible/playbooks/garbage_collector.yaml
+        # - run_playbook:
+        #        name: gitops-vm-dr-infra/ansible/playbooks/garbage_collector.yaml
         - debug:
             msg:
               - "A VM named: {{ event.k8s_event.object.metadata.name }} has been deleted."
+        - run_job_template:
+            name: GitOps Based VM DR Automation - Garbage Collector
+            organization: Default
+            job_args:
+              extra_vars:
+                vm_object: "{{ event.k8s_event.object }}"
+
