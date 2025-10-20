@@ -13,6 +13,20 @@
       args:
         chdir: "{{ clone_dir }}"
 
+    - name: Set git user email for commit
+      ansible.builtin.git_config:
+        repo: "{{ clone_dir }}"
+        scope: local
+        name: user.email
+        value: "{{ git_commit_email | default('aap-bot@example.com') }}"
+
+    - name: Set git user name for commit
+      ansible.builtin.git_config:
+        repo: "{{ clone_dir }}"
+        scope: local
+        name: user.name
+        value: "{{ git_commit_username | default('AAP Automation Bot') }}"
+
     - name: Commit changes
       ansible.builtin.command: "git commit -m '{{ commit_message | default('Automated Git Sync') }}'"
       args:
@@ -22,5 +36,3 @@
       ansible.builtin.command: git push origin HEAD
       args:
         chdir: "{{ clone_dir }}"
-      environment:
-            GIT_SSH_COMMAND: "ssh -i {{ git_ssh_key_path }} -o StrictHostKeyChecking=no"
