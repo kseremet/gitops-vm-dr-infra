@@ -106,6 +106,8 @@
         recurse: true
       register: git_pv_files
 
+    - debug: var=git_pv_files
+
     - name: Read and parse all PV manifests from Git
       ansible.builtin.set_fact:
         all_git_pvs: |
@@ -113,13 +115,14 @@
           {{ lookup('file', file.path) | from_yaml | to_json }}{% if not loop.last %},{% endif %}
           {% endfor %}]
 
+    - debug: var=all_git_pvs
     - name: Filter PVs associated with the selected VMs
       ansible.builtin.set_fact:
         pvs_to_promote: "{{ all_git_pvs | selectattr('spec.claimRef.name', 'in', pvc_names_to_find) | list }}"
 
     - debug: var=pvs_to_promote
     - fail:
-    
+
     - name: Promote storage for each selected PV
       ansible.builtin.include_tasks:
         file: "{{ csi_driver_promote_task_map[pv_object.spec.csi.driver] }}"
