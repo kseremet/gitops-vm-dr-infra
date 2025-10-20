@@ -120,6 +120,12 @@
           {{ pvc_dict }}
 
     - debug: var=pvc_manifests_dict
+
+    - name: Extract the corresponding PV names from the PVC manifests
+      ansible.builtin.set_fact:
+        pv_names_to_find: "{{ pvc_manifests_dict.values() | map(attribute='spec.volumeName') | list }}"
+
+    - debug: var=pv_names_to_find
     - fail:
     - name: Find all PV manifest files in the Git repository
       ansible.builtin.find:
