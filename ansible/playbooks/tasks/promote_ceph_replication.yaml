@@ -34,6 +34,7 @@
       changed_when: false
       ignore_errors: true # Image might not exist yet if replication hasn't started fully
 
+    - debug: var=rbd_info_result
     - name: Determine if image is currently secondary
       ansible.builtin.set_fact:
         is_secondary: "{{ (rbd_info_result.rc == 0 and
