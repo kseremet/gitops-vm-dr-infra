@@ -39,8 +39,8 @@
       ansible.builtin.set_fact:
         is_secondary: "{{ (rbd_info_result.rc == 0 and
                            'mirroring' in (rbd_info_result.stdout | from_json) and
-                           (rbd_info_result.stdout | from_json).mirroring is defined and # Check if mirroring key exists
-                           (rbd_info_result.stdout | from_json).mirroring.primary == false) }}" # Check if primary is false
+                           (rbd_info_result.stdout | from_json).mirroring is defined and
+                           (rbd_info_result.stdout | from_json).mirroring.primary == false) }}"
 
     - name: Force promote the RBD image if it is secondary
       kubernetes.core.k8s_exec:
