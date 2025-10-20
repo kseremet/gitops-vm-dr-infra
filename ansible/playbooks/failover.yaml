@@ -98,11 +98,6 @@
           {{ names | unique | list }}
 
     - debug: var=pvc_names_to_find
-    - fail:
-
-    - name: Extract PVC names for the selected VMs
-      ansible.builtin.set_fact:
-        pvc_names_to_find: "{{ vms_to_failover | map(attribute='spec.template.spec.volumes') | flatten | selectattr('persistentVolumeClaim', 'defined') | map(attribute='persistentVolumeClaim.claimName') | list + vms_to_failover | map(attribute='spec.template.spec.volumes') | flatten | selectattr('dataVolume', 'defined') | map(attribute='dataVolume.name') | list | unique }}"
 
     - name: Find all PV manifest files in the Git repository
       ansible.builtin.find:
@@ -122,6 +117,9 @@
       ansible.builtin.set_fact:
         pvs_to_promote: "{{ all_git_pvs | selectattr('spec.claimRef.name', 'in', pvc_names_to_find) | list }}"
 
+    - debug: var=pvs_to_promote
+    - fail:
+    
     - name: Promote storage for each selected PV
       ansible.builtin.include_tasks:
         file: "{{ csi_driver_promote_task_map[pv_object.spec.csi.driver] }}"
