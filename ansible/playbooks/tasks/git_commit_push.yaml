@@ -14,18 +14,15 @@
         chdir: "{{ clone_dir }}"
 
     - name: Set git user email for commit
-      ansible.builtin.git_config:
-        repo: "{{ clone_dir }}"
-        scope: local
-        name: user.email
-        value: "{{ git_commit_email | default('aap-bot@example.com') }}"
+      ansible.builtin.command: "git config --local user.email '{{ git_commit_email | default('aap-bot@example.com') }}'"
+      args:
+        chdir: "{{ clone_dir }}"
+      changed_when: false
 
     - name: Set git user name for commit
-      ansible.builtin.git_config:
-        repo: "{{ clone_dir }}"
-        scope: local
-        name: user.name
-        value: "{{ git_commit_username | default('AAP Automation Bot') }}"
+      ansible.builtin.command: "git config --local user.name '{{ git_commit_username | default('AAP Automation Bot') }}'"
+      args:
+        chdir: "{{ clone_dir }}"
 
     - name: Commit changes
       ansible.builtin.command: "git commit -m '{{ commit_message | default('Automated Git Sync') }}'"
