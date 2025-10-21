@@ -23,10 +23,6 @@
           - "dr.demojam.com/enabled=true"
       register: vm_discovery_results
 
-    - name: Exit if no VMs are found to process
-      ansible.builtin.meta: end_play
-      when: vm_discovery_results.resources | length == 0
-
     - name: Initialize the list of expected filenames
       ansible.builtin.set_fact:
         expected_manifest_filenames: []
