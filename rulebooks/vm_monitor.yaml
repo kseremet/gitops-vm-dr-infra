@@ -36,9 +36,9 @@
         - run_job_template:
             name: GitOps Based VM DR Automation - Process VM Update Event
             organization: Default
-            job_args:
+            job_kwargs:
               extra_vars:
-                vm_object: "{{ event.k8s_event.object }}"
+                event_vm_object: "{{ event.k8s_event.object }}"
 
     # Handle the deletion event.
     - name: Trigger DR cleanup for deleted VMs
@@ -64,7 +64,3 @@
         - run_job_template:
             name: GitOps Based VM DR Automation - Garbage Collector
             organization: Default
-            job_args:
-              extra_vars:
-                vm_object: "{{ event.k8s_event.object }}"
-
