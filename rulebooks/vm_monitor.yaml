@@ -36,7 +36,7 @@
         - run_job_template:
             name: GitOps Based VM DR Automation - Process VM Update Event
             organization: Default
-            job_kwargs:
+            job_args:
               extra_vars:
                 event_vm_object: "{{ event.k8s_event.object }}"
 
