@@ -8,6 +8,7 @@
     git_ssh_key_path: "{{ lookup('env', 'ANSIBLE_PRIVATE_KEY_FILE') }}"
     github_user: "kseremet"
     repo_name: "gitops-vm-dr-manifests"
+    repo_fqdn: "github.com"
     repo_url: "git@github.com:{{ github_user }}/{{ repo_name }}.git" # SSH URL
 
     # --- Kustomize Configuration ---
