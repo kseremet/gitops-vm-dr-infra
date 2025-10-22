@@ -31,14 +31,22 @@
         #        extra_vars:
         #            event_vm_object: "{{ event.k8s_event.object }}"
         - debug:
-            msg:
-              - "A new VM named: {{ event.k8s_event.object.metadata.name }} has been created or updated."
-        - run_job_template:
-            name: GitOps Based VM DR Automation - Process VM Update Event
-            organization: Default
-            job_args:
-              extra_vars:
-                event_vm_object: "{{ event.k8s_event.object }}"
+            msg: |-
+              {% if events is mapping %}
+              Processing VM batch:
+              {% for item in events.values() %}
+              - {{ item.k8s_event.object.metadata.namespace }}/{{ item.k8s_event.object.metadata.name }}
+              {% endfor %}
+              {% else %}
+              Processing single VM:
+              - {{ event.k8s_event.object.metadata.namespace }}/{{ event.k8s_event.object.metadata.name }}
+              {% endif %}
+        # - run_job_template:
+        #     name: GitOps Based VM DR Automation - Process VM Update Event
+        #     organization: Default
+        #     job_args:
+        #       extra_vars:
+        #         event_vm_object: "{{ event.k8s_event.object }}"
 
     # Handle the deletion event.
     - name: Trigger DR cleanup for deleted VMs
