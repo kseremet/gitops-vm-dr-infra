@@ -45,6 +45,7 @@
       loop: "{{ vm_objects_list }}"
       loop_control:
         loop_var: "event_vm_object"
+        label: "{{ event_vm_object.metadata.namespace }}/{{ event_vm_object.metadata.name }}"
 
     - name: Commit and push all reconciliation changes
       ansible.builtin.include_tasks:
