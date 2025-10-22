@@ -51,7 +51,7 @@
                   {% if events is mapping %}
                   {{ events.values() | map(attribute='k8s_event.object') | list }}
                   {% else %}
-                  [ event.k8s_event.object ]
+                  {{ [ event.k8s_event.object ] }}
                   {% endif %}
 
     # Handle the deletion event.
