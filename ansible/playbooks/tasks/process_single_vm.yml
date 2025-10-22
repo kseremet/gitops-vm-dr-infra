@@ -87,6 +87,8 @@
           loop: "{{ pvc_names }}"
           register: pvc_info_list
 
+        - debug: var=pvc_info_list
+        
         - name: Extract PV names from the PVC objects
           ansible.builtin.set_fact:
             pv_names: "{{ pvc_info_list.results | map(attribute='resources') | flatten | map(attribute='spec.volumeName') | list }}"
