@@ -11,6 +11,7 @@ spec:
         revision: HEAD
         directories:
           - path: vms/base/*
+        requeueAfterSeconds: 30
   template:
     metadata:
       name: "dr-vm-{{ '{{' }} path.basename {{ '}}' }}-{{ target_cluster_name }}"
