@@ -41,12 +41,18 @@
               Processing single VM:
               - {{ event.k8s_event.object.metadata.namespace }}/{{ event.k8s_event.object.metadata.name }}
               {% endif %}
-        # - run_job_template:
-        #     name: GitOps Based VM DR Automation - Process VM Update Event
-        #     organization: Default
-        #     job_args:
-        #       extra_vars:
-        #         event_vm_object: "{{ event.k8s_event.object }}"
+        - run_job_template:
+            name: GitOps Based VM DR Automation - Process VM Update Event
+            organization: Default
+            job_args:
+              extra_vars:
+                #event_vm_object: "{{ event.k8s_event.object }}"
+                vm_objects_list: >-
+                  {% if events is mapping %}
+                  {{ events.values() | map(attribute='k8s_event.object') | list }}
+                  {% else %}
+                  [ event.k8s_event.object ]
+                  {% endif %}
 
     # Handle the deletion event.
     - name: Trigger DR cleanup for deleted VMs
@@ -67,8 +73,15 @@
         # - run_playbook:
         #        name: gitops-vm-dr-infra/ansible/playbooks/garbage_collector.yaml
         - debug:
-            msg:
-              - "A VM named: {{ event.k8s_event.object.metadata.name }} has been deleted."
+            msg: |-
+              {% if events is mapping %}
+              Following VMs were deleted:
+              {% for item in events.values() %}
+              - {{ item.k8s_event.object.metadata.namespace }}/{{ item.k8s_event.object.metadata.name }}
+              {% endfor %}
+              {% else %}
+              A VM named {{ event.k8s_event.object.metadata.namespace }}/{{ event.k8s_event.object.metadata.name }} was deleted.
+              {% endif %}
         - run_job_template:
             name: GitOps Based VM DR Automation - Garbage Collector
             organization: Default
