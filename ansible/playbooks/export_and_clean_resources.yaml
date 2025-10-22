@@ -15,40 +15,15 @@
     target_cluster_name: cls2
 
   tasks:
-    - name: Exit immediately if VM is being deleted
-      ansible.builtin.meta: end_play
-      when: event_vm_object.metadata.deletionTimestamp is defined
-
-    - name: Check if VM is enabled for Disaster Recovery
-      ansible.builtin.meta: end_play
-      when: event_vm_object.metadata.labels['dr.demojam.com/enabled'] | default('false') != 'true'
-
     - name: Create a unique temporary directory for the Git clone
       ansible.builtin.tempfile:
         state: directory
-        prefix: "gitops_dr_reconciler_"
+        prefix: "gitops_dr_event_processor_"
       register: temp_clone_dir
 
     - name: Set clone_dir fact
       ansible.builtin.set_fact:
         clone_dir: "{{ temp_clone_dir.path }}"
-
-    - name: Get VM name and namespace from the incoming event
-      ansible.builtin.set_fact:
-        vm_name: "{{ event_vm_object.metadata.name }}"
-        vm_namespace: "{{ event_vm_object.metadata.namespace }}"
-
-    - name: Get the LATEST version of the VM object from the cluster
-      kubernetes.core.k8s_info:
-        api_version: kubevirt.io/v1
-        kind: VirtualMachine
-        name: "{{ vm_name }}"
-        namespace: "{{ vm_namespace }}"
-      register: live_vm_info_result
-
-    - name: Set the 'vm_object' fact to the live object for the core logic to use
-      ansible.builtin.set_fact:
-        vm_object: "{{ live_vm_info_result.resources[0] }}"
 
     - name: Perform a shallow clone of the Git repository via SSH
       ansible.builtin.git:
@@ -64,14 +39,21 @@
       ansible.builtin.include_tasks:
         file: tasks/initialize_git_repo.yaml
 
-    - name: Process the single VM from the event (always sync)
+    - name: Process each VM from the batch
       ansible.builtin.include_tasks:
-        file: tasks/process_single_vm.yml
-      vars:
-        force_sync: true
+        file: tasks/process_vm_from_batch.yml
+      loop: "{{ vm_objects_list }}"
+      loop_control:
+        loop_var: "event_vm_object"
 
     - name: Commit and push all reconciliation changes
       ansible.builtin.include_tasks:
         file: tasks/git_commit_push.yaml
       vars:
-        commit_message: "Automated GC: Cleaned up orphan resources"
+        commit_message: "Event-Driven VM DR sync"
+
+    - name: Clean up the temporary clone directory
+      ansible.builtin.file:
+        path: "{{ clone_dir }}"
+        state: absent
+      when: clone_dir is defined

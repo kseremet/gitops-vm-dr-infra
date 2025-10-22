@@ -1,0 +1,38 @@
+---
+- name: Set convenience facts for this VM
+  ansible.builtin.set_fact:
+    vm_name: "{{ event_vm_object.metadata.name }}"
+    vm_namespace: "{{ event_vm_object.metadata.namespace }}"
+
+- name: Get the LATEST version of the VM object from the cluster
+  kubernetes.core.k8s_info:
+    api_version: kubevirt.io/v1
+    kind: VirtualMachine
+    name: "{{ vm_name }}"
+    namespace: "{{ vm_namespace }}"
+  register: live_vm_info_result
+
+- name: "Set 'vm_object' fact (the live object) and check conditions"
+  ansible.builtin.set_fact:
+    vm_object: "{{ live_vm_info_result.resources[0] }}"
+    is_dr_enabled: "{{ (live_vm_info_result.resources[0].metadata.labels['dr.demojam.com/enabled'] | default('false')) == 'true' }}"
+    is_deleting: "{{ live_vm_info_result.resources[0].metadata.deletionTimestamp is defined }}"
+
+- name: "Process the single VM (only if DR enabled and not deleting)"
+  ansible.builtin.include_tasks:
+    file: tasks/process_single_vm.yml
+  vars:
+    force_sync: true
+  when:
+    - is_dr_enabled
+    - not is_deleting
+
+- name: "Log skip - VM is being deleted"
+  ansible.builtin.debug:
+    msg: "Skipping {{ vm_name }} in {{ vm_namespace }}: VM has deletionTimestamp."
+  when: is_deleting
+
+- name: "Log skip - DR not enabled"
+  ansible.builtin.debug:
+    msg: "Skipping {{ vm_name }} in {{ vm_namespace }}: DR is not enabled (dr.demojam.com/enabled label is not 'true')."
+  when: not is_dr_enabled
