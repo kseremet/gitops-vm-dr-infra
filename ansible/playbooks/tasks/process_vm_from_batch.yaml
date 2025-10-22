@@ -14,8 +14,7 @@
 # --- Main Processing Block ---
 # Only run this block if the incoming event does NOT have a deletionTimestamp.
 - name: Process VM
-  ansible.builtin.block:
-
+  block:
     - name: Get the LATEST version of the VM object from the cluster
       kubernetes.core.k8s_info:
         api_version: kubevirt.io/v1
@@ -34,8 +33,7 @@
     # --- Process Live Object Block ---
     # This block is now safe and will only run if the VM was found
     - name: Process Live VM Object
-      ansible.builtin.block:
-
+      block:
         - name: "Set 'vm_object' fact (the live object) and check conditions"
           ansible.builtin.set_fact:
             vm_object: "{{ live_vm_info_result.resources[0] }}"
@@ -61,7 +59,5 @@
           ansible.builtin.debug:
             msg: "Skipping {{ vm_name }} in {{ vm_namespace }}: DR is not enabled (dr.demojam.com/enabled label is not 'true')."
           when: not is_dr_enabled
-
       when: live_vm_info_result.resources | length > 0
-
   when: event_vm_object.metadata.deletionTimestamp is not defined
