@@ -49,9 +49,9 @@
                 #event_vm_object: "{{ event.k8s_event.object }}"
                 vm_objects_list: >-
                   {% if events is mapping %}
-                  {{ events.values() | map(attribute='k8s_event.object') | list }}
+                  {{ (events.values() | map(attribute='k8s_event.object') | list) | to_json }}
                   {% else %}
-                  {{ [ event.k8s_event.object ] }}
+                  {{ ([ event.k8s_event.object ]) | to_json }}
                   {% endif %}
 
     # Handle the deletion event.
