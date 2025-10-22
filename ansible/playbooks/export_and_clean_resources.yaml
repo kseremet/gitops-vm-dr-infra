@@ -41,7 +41,7 @@
 
     - name: Process each VM from the batch
       ansible.builtin.include_tasks:
-        file: tasks/process_vm_from_batch.yml
+        file: tasks/process_vm_from_batch.yaml
       loop: "{{ vm_objects_list }}"
       loop_control:
         loop_var: "event_vm_object"
