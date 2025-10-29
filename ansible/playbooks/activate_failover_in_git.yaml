@@ -1,0 +1,146 @@
+- name: Activate Failover in Git (Control Plane)
+  hosts: localhost
+  gather_facts: false
+  connection: local
+
+  vars:
+    # --- Git Configuration (Should match AAP Credentials) ---
+    git_ssh_key_path: "{{ lookup('env', 'ANSIBLE_PRIVATE_KEY_FILE') }}"
+    github_user: "kseremet"
+    repo_name: "gitops-vm-dr-manifests"
+    repo_url: "git@github.com:{{ github_user }}/{{ repo_name }}.git" # SSH URL
+    git_branch: "main" # IMPORTANT: Set this to your default branch (e.g., main, master)
+
+    # --- Failover Configuration (Passed as Extra Vars) ---
+    
+    # MUST match the selector used in the failover.yml data plane job
+    # Example: -e "vm_selector='app-tier=database,region=emea'"
+    # An empty string "" will target ALL VMs.
+    vm_selector: ""
+
+    # The name of the DR cluster overlay to modify
+    # Example: -e "target_cluster_name=cls2"
+    target_cluster_name: "cls2"
+
+    # --- Internal Vars ---
+    patch_file_relative_path: "patches/power_on.yaml
+
+  tasks:
+    - name: Fail if target_cluster_name is not set
+      ansible.builtin.fail:
+        msg: "The 'target_cluster_name' variable is required. e.g., -e 'target_cluster_name=cls2'"
+      when: target_cluster_name | length == 0
+
+    - name: Create a unique temporary directory for the Git clone
+      ansible.builtin.tempfile:
+        state: directory
+        prefix: "gitops_dr_activate_"
+      register: temp_clone_dir
+
+    - name: Set clone_dir and kustomization file path
+      ansible.builtin.set_fact:
+        clone_dir: "{{ temp_clone_dir.path }}"
+        kustomization_file_path: "{{ temp_clone_dir.path }}/vms/overlays/{{ target_cluster_name }}/components/failover-control/kustomization.yaml"
+
+    - name: Clone the Git repository
+      ansible.builtin.git:
+        repo: "{{ repo_url }}"
+        dest: "{{ clone_dir }}"
+        version: "{{ git_branch }}"
+        depth: 1
+        clone: true
+        update: true
+        key_file: "{{ git_ssh_key_path }}"
+        accept_hostkey: true
+      
+    # --- 1. Construct the desired patch ---
+    - name: Parse the provided VM selector string into a dictionary
+      ansible.builtin.set_fact:
+        selector_dict: "{{ dict(vm_selector.split(',') | map('trim') | select('contains', '=') | map('split', '=', 1)) if vm_selector | length > 0 else {} }}"
+
+    - name: 'Build the base target: block'
+      ansible.builtin.set_fact:
+        kustomization_target_block:
+          group: kubevirt.io
+          kind: VirtualMachine
+
+    - name: Add labelSelector to target block if vm_selector is provided
+      ansible.builtin.set_fact:
+        kustomization_target_block: "{{ kustomization_target_block | combine({'labelSelector': selector_dict}) }}"
+      when: selector_dict | length > 0
+
+    - name: Define the final patch structure to add
+      ansible.builtin.set_fact:
+        patch_to_add:
+          path: "{{ patch_file_relative_path }}"
+          target: "{{ kustomization_target_block }}"
+
+    - name: "DEBUG: This is the patch that will be added"
+      ansible.builtin.debug:
+        var: patch_to_add
+
+    # --- 2. Idempotently modify the kustomization.yaml ---
+    - name: Stat the kustomization file to ensure it exists
+      ansible.builtin.stat:
+        path: "{{ kustomization_file_path }}"
+      register: kustomization_stat
+
+    - name: Fail if kustomization file does not exist
+      ansible.builtin.fail:
+        msg: "The target kustomization file was not found at {{ kustomization_file_path }}"
+      when: not kustomization_stat.stat.exists
+
+    - name: Read the current kustomization.yaml
+      ansible.builtin.slurp:
+        src: "{{ kustomization_file_path }}"
+      register: slurp_kustomization
+
+    - name: Parse the kustomization.yaml content
+      ansible.builtin.set_fact:
+        kustomization_content: "{{ slurp_kustomization.content | b64decode | from_yaml }}"
+
+    - name: Initialize 'patches' key if it doesn't exist or is null
+      ansible.builtin.set_fact:
+        kustomization_content: "{{ kustomization_content | combine({'patches': []}) }}"
+      when: "'patches' not in kustomization_content or kustomization_content.patches is none"
+
+    - name: Check if the patch already exists
+      ansible.builtin.set_fact:
+        patch_exists: "{{ patch_to_add in kustomization_content.patches }}"
+
+    - name: "INFO: Patch found, no changes needed"
+      ansible.builtin.debug:
+        msg: "The failover patch for selector '{{ vm_selector }}' already exists. No changes will be made."
+      when: patch_exists
+
+    # --- 3. Apply changes and commit (if needed) ---
+    - name: Apply changes to Git if patch does not exist
+      when: not patch_exists
+      block:
+        - name: Add the new patch to the patches list
+          ansible.builtin.set_fact:
+            kustomization_content: "{{ kustomization_content | combine({'patches': kustomization_content.patches + [patch_to_add]}, recursive=True) }}"
+
+        - name: Write the modified kustomization.yaml back to disk
+          ansible.builtin.copy:
+            content: "{{ kustomization_content | to_nice_yaml }}"
+            dest: "{{ kustomization_file_path }}"
+
+        - name: Commit and push all reconciliation changes
+          ansible.builtin.include_tasks:
+            file: "tasks/git_commit_push.yaml"
+          vars:
+            # Pass the commit message to the included task
+            commit_message: "CI: Activate failover for selector '{{ vm_selector | default('all') }}' on {{ target_cluster_name }}"
+            # Pass the path to the included task
+            repo_path: "{{ clone_dir }}"
+          
+        - name: "SUCCESS: Pushed activation to Git"
+          ansible.builtin.debug:
+            msg: "Successfully updated {{ kustomization_file_path }} and pushed to origin."
+
+    - name: Clean up temporary directory
+      ansible.builtin.file:
+        path: "{{ clone_dir }}"
+        state: absent
+      when: clone_dir is defined
