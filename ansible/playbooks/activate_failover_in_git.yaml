@@ -23,7 +23,7 @@
     target_cluster_name: "cls2"
 
     # --- Internal Vars ---
-    patch_file_relative_path: "patches/power_on.yaml
+    patch_file_relative_path: "patches/power_on.yaml"
 
   tasks:
     - name: Fail if target_cluster_name is not set
