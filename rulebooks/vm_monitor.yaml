@@ -14,7 +14,7 @@
         event.k8s_event.object.spec.template is defined
       
       throttle:
-        once_after: "20 seconds"
+        once_after: "10 seconds"
         group_by_attributes:
           - event.k8s_event.object.metadata.name
           - event.k8s_event.object.metadata.namespace
@@ -54,7 +54,7 @@
       condition: event.k8s_event.type == "DELETED"
 
       throttle:
-        once_after: "20 seconds"
+        once_after: "10 seconds"
         group_by_attributes:
           - event.k8s_event.object.metadata.namespace
 
