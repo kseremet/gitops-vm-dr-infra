@@ -54,26 +54,22 @@
         accept_hostkey: true
       
     # --- 1. Construct the desired patch ---
-    - name: Parse the provided VM selector string into a dictionary
-      ansible.builtin.set_fact:
-        selector_dict: "{{ dict(vm_selector.split(',') | map('trim') | select('contains', '=') | map('split', '=', 1)) if vm_selector | length > 0 else {} }}"
-
     - name: 'Build the base target: block'
       ansible.builtin.set_fact:
-        kustomization_target_block:
+        kustomize_target_block:
           group: kubevirt.io
           kind: VirtualMachine
 
     - name: Add labelSelector to target block if vm_selector is provided
       ansible.builtin.set_fact:
-        kustomization_target_block: "{{ kustomization_target_block | combine({'labelSelector': selector_dict}) }}"
-      when: selector_dict | length > 0
+        kustomize_target_block: "{{ kustomize_target_block | combine({'labelSelector': vm_selector}) }}"
+      when: vm_selector | length > 0
 
     - name: Define the final patch structure to add
       ansible.builtin.set_fact:
         patch_to_add:
           path: "{{ patch_file_relative_path }}"
-          target: "{{ kustomization_target_block }}"
+          target: "{{ kustomize_target_block }}"
 
     - name: "DEBUG: This is the patch that will be added"
       ansible.builtin.debug:
