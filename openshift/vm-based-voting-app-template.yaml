@@ -1,0 +1,732 @@
+apiVersion: template.openshift.io/v1
+kind: Template
+metadata:
+  name: vm-based-voting-app
+  annotations:
+    openshift.io/display-name: "DR Demo: Multi Tier Voting App"
+    description: "Deploys a simple distributed application running across multiple VMs."
+    iconClass: icon-server
+    tags: "kubevirt,virtualmachine,demo,dr"
+labels:
+  app: voting-app-dr
+objects:
+
+# ==============================================================================
+# 1. NETWORK SERVICES & ROUTES
+# ==============================================================================
+- apiVersion: v1
+  kind: Service
+  metadata:
+    name: redis
+    labels:
+      app: voting-app
+      tier: backend
+  spec:
+    ports:
+    - port: 6379
+      targetPort: 6379
+    selector:
+      vm.kubevirt.io/name: voting-redis
+
+- apiVersion: v1
+  kind: Service
+  metadata:
+    name: db
+    labels:
+      app: voting-app
+      tier: backend
+  spec:
+    ports:
+    - port: 5432
+      targetPort: 5432
+    selector:
+      vm.kubevirt.io/name: voting-db
+
+- apiVersion: v1
+  kind: Service
+  metadata:
+    name: vote-ui
+    labels:
+      app: voting-app
+      tier: frontend
+  spec:
+    ports:
+    - port: 80
+      targetPort: 80
+    selector:
+      vm.kubevirt.io/name: voting-vote
+
+- apiVersion: v1
+  kind: Service
+  metadata:
+    name: result-ui
+    labels:
+      app: voting-app
+      tier: frontend
+  spec:
+    ports:
+    - port: 80
+      targetPort: 80
+    selector:
+      vm.kubevirt.io/name: voting-result
+
+- apiVersion: route.openshift.io/v1
+  kind: Route
+  metadata:
+    name: route-vote
+    labels:
+      app: voting-app
+      tier: frontend
+  spec:
+    to:
+      kind: Service
+      name: vote-ui
+      weight: 100
+    port:
+      targetPort: 80
+    tls:
+      termination: edge
+      insecureEdgeTerminationPolicy: Redirect
+    wildcardPolicy: None
+
+- apiVersion: route.openshift.io/v1
+  kind: Route
+  metadata:
+    name: route-result
+    labels:
+      app: voting-app
+      tier: frontend
+  spec:
+    to:
+      kind: Service
+      name: result-ui
+      weight: 100
+    port:
+      targetPort: 80
+    tls:
+      termination: edge
+      insecureEdgeTerminationPolicy: Redirect
+    wildcardPolicy: None
+
+# ==============================================================================
+# 2. USER DATA SECRETS
+# ==============================================================================
+
+- apiVersion: v1
+  kind: Secret
+  metadata:
+    name: voting-redis-userdata
+  stringData:
+    userdata: |
+      #cloud-config
+      user: fedora
+      password: ${VM_PASSWORD}
+      chpasswd: { expire: False }
+      packages:
+        - podman
+        - firewalld
+      write_files:
+        - path: /etc/containers/systemd/redis.container
+          permissions: '0644'
+          content: |
+            [Unit]
+            Description=Redis Container
+            After=network-online.target
+            [Container]
+            Image=docker.io/library/redis:alpine
+            PublishPort=6379:6379
+            [Service]
+            Restart=always
+            [Install]
+            WantedBy=multi-user.target
+        - path: /root/setup.sh
+          permissions: '0755'
+          content: |
+            #!/bin/bash
+            systemctl start firewalld; firewall-cmd --permanent --add-port=6379/tcp; firewall-cmd --reload
+            systemctl daemon-reload; systemctl start redis.service
+      runcmd:
+        - chmod +x /root/setup.sh
+        - /root/setup.sh
+
+- apiVersion: v1
+  kind: Secret
+  metadata:
+    name: voting-db-userdata
+  stringData:
+    userdata: |
+      #cloud-config
+      user: fedora
+      password: ${VM_PASSWORD}
+      chpasswd: { expire: False }
+      packages:
+        - podman
+        - firewalld
+      write_files:
+        - path: /etc/containers/systemd/db.container
+          permissions: '0644'
+          content: |
+            [Unit]
+            Description=Postgres Database Container
+            After=network-online.target
+            [Container]
+            Image=docker.io/library/postgres:15-alpine
+            PublishPort=5432:5432
+            Environment=POSTGRES_USER=postgres
+            Environment=POSTGRES_PASSWORD=postgres
+            Volume=/mnt/data:/var/lib/postgresql/data:Z
+            [Service]
+            Restart=always
+            [Install]
+            WantedBy=multi-user.target
+        - path: /root/setup.sh
+          permissions: '0755'
+          content: |
+            #!/bin/bash
+            SERIAL="DBDATA"
+            DISK_NAME=$(lsblk --nodeps -no name,serial | grep "$SERIAL" | cut -f1 -d' ')
+            if [ -n "$DISK_NAME" ]; then
+              DEVICE="/dev/$DISK_NAME";
+              if ! blkid $DEVICE | grep -q "TYPE"; then mkfs.xfs $DEVICE; fi;
+              mkdir -p /mnt/data; mount $DEVICE /mnt/data;
+              if ! grep -q "/mnt/data" /etc/fstab; then echo "$DEVICE /mnt/data xfs defaults 0 0" >> /etc/fstab; fi;
+            fi
+            systemctl start firewalld; firewall-cmd --permanent --add-port=5432/tcp; firewall-cmd --reload
+            systemctl daemon-reload; systemctl start db.service
+      runcmd:
+        - chmod +x /root/setup.sh
+        - /root/setup.sh
+
+- apiVersion: v1
+  kind: Secret
+  metadata:
+    name: voting-worker-userdata
+  stringData:
+    userdata: |
+      #cloud-config
+      user: fedora
+      password: ${VM_PASSWORD}
+      chpasswd: { expire: False }
+      packages:
+        - podman
+        - curl
+      write_files:
+        - path: /usr/local/bin/watchdog-db-log.sh
+          permissions: '0755'
+          content: |
+            #!/bin/bash
+            S=$1; C=$2; T=60; E=0;
+            while [ $E -lt $T ]; do
+              if podman logs $C 2>&1 | grep -q "Connected to db"; then exit 0; fi;
+              sleep 2; E=$((E+2));
+            done;
+            systemctl restart $S; exit 1
+        - path: /usr/local/bin/wait-for-db-port.sh
+          permissions: '0755'
+          content: |
+            #!/bin/bash
+            # Script to wait for DB connection to prevent service startup failures.
+            # Checks for cURL exit codes 0 (HTTP success) or 52 (Empty reply/TCP success)
+
+            # Host is 'db' (the Kubernetes Service name) and Port is 5432
+            DB_HOST="db"
+            DB_PORT="5432"
+
+            while true; do
+              # Attempt connection using cURL, with a 5-second timeout
+              curl -s --connect-timeout 5 ${DB_HOST}:${DB_PORT}
+              EXIT_CODE=$?
+
+              # Check if connection was successful (exit code 0 or 52)
+              if [ $EXIT_CODE -eq 0 ] || [ $EXIT_CODE -eq 52 ]; then
+                echo "Database ${DB_HOST}:${DB_PORT} is reachable (Exit Code: ${EXIT_CODE}). Proceeding."
+                break
+              fi
+
+              # Connection failed (Exit Code 28 is timeout/refused)
+              echo "Waiting for database ${DB_HOST}:${DB_PORT} to be ready (Current Exit Code: ${EXIT_CODE}). Retrying in 5 seconds..."
+              sleep 5
+            done
+        - path: /etc/containers/systemd/worker.container
+          permissions: '0644'
+          content: |
+            [Unit]
+            Description=Worker Container
+            After=network-online.target
+            [Container]
+            Image=docker.io/dockersamples/examplevotingapp_worker
+            Environment=REDIS_HOST=redis
+            Environment=DB_HOST=db
+            Environment=POSTGRES_USER=postgres
+            Environment=POSTGRES_PASSWORD=postgres
+            [Service]
+            Restart=always
+            ExecStartPre=/usr/local/bin/wait-for-db-port.sh
+            ExecStartPost=/usr/bin/bash -c "/usr/local/bin/watchdog-db-log.sh worker.service systemd-worker &"
+            [Install]
+            WantedBy=multi-user.target
+        - path: /root/setup.sh
+          permissions: '0755'
+          content: |
+            #!/bin/bash
+            systemctl daemon-reload; systemctl start worker.service
+      runcmd:
+        - chmod +x /root/setup.sh
+        - /root/setup.sh
+
+- apiVersion: v1
+  kind: Secret
+  metadata:
+    name: voting-vote-userdata
+  stringData:
+    userdata: |
+      #cloud-config
+      user: fedora
+      password: ${VM_PASSWORD}
+      chpasswd: { expire: False }
+      packages:
+        - podman
+        - firewalld
+      write_files:
+        - path: /etc/containers/systemd/vote.container
+          permissions: '0644'
+          content: |
+            [Unit]
+            Description=Vote UI Container
+            After=network-online.target
+            [Container]
+            Image=docker.io/dockersamples/examplevotingapp_vote
+            PublishPort=80:80
+            Environment=REDIS_HOST=redis
+            [Service]
+            Restart=always
+            [Install]
+            WantedBy=multi-user.target
+        - path: /root/setup.sh
+          permissions: '0755'
+          content: |
+            #!/bin/bash
+            systemctl start firewalld; firewall-cmd --permanent --add-port=80/tcp; firewall-cmd --reload
+            systemctl daemon-reload; systemctl start vote.service
+      runcmd:
+        - chmod +x /root/setup.sh
+        - /root/setup.sh
+
+- apiVersion: v1
+  kind: Secret
+  metadata:
+    name: voting-result-userdata
+  stringData:
+    userdata: |
+      #cloud-config
+      user: fedora
+      password: ${VM_PASSWORD}
+      chpasswd: { expire: False }
+      packages:
+        - podman
+        - firewalld
+        - curl
+      write_files:
+        - path: /usr/local/bin/watchdog-db-log.sh
+          permissions: '0755'
+          content: |
+            #!/bin/bash
+            S=$1; C=$2; T=60; E=0;
+            while [ $E -lt $T ]; do
+              if podman logs $C 2>&1 | grep -q "Connected to db"; then exit 0; fi;
+              sleep 2; E=$((E+2));
+            done;
+            systemctl restart $S; exit 1
+        - path: /usr/local/bin/wait-for-db-port.sh
+          permissions: '0755'
+          content: |
+            #!/bin/bash
+            # Script to wait for DB connection to prevent service startup failures.
+            # Checks for cURL exit codes 0 (HTTP success) or 52 (Empty reply/TCP success)
+
+            # Host is 'db' (the Kubernetes Service name) and Port is 5432
+            DB_HOST="db"
+            DB_PORT="5432"
+
+            while true; do
+              # Attempt connection using cURL, with a 5-second timeout
+              curl -s --connect-timeout 5 ${DB_HOST}:${DB_PORT}
+              EXIT_CODE=$?
+
+              # Check if connection was successful (exit code 0 or 52)
+              if [ $EXIT_CODE -eq 0 ] || [ $EXIT_CODE -eq 52 ]; then
+                echo "Database ${DB_HOST}:${DB_PORT} is reachable (Exit Code: ${EXIT_CODE}). Proceeding."
+                break
+              fi
+
+              # Connection failed (Exit Code 28 is timeout/refused)
+              echo "Waiting for database ${DB_HOST}:${DB_PORT} to be ready (Current Exit Code: ${EXIT_CODE}). Retrying in 5 seconds..."
+              sleep 5
+            done
+        - path: /etc/containers/systemd/result.container
+          permissions: '0644'
+          content: |
+            [Unit]
+            Description=Result UI Container
+            After=network-online.target
+            [Container]
+            Image=docker.io/dockersamples/examplevotingapp_result
+            PublishPort=80:80
+            Environment=DB_HOST=db
+            Environment=POSTGRES_USER=postgres
+            Environment=POSTGRES_PASSWORD=postgres
+            [Service]
+            Restart=always
+            ExecStartPre=/usr/local/bin/wait-for-db-port.sh
+            ExecStartPost=/usr/bin/bash -c "/usr/local/bin/watchdog-db-log.sh result.service systemd-result &"
+            [Install]
+            WantedBy=multi-user.target
+        - path: /root/setup.sh
+          permissions: '0755'
+          content: |
+            #!/bin/bash
+            systemctl start firewalld; firewall-cmd --permanent --add-port=80/tcp; firewall-cmd --reload
+            systemctl daemon-reload; systemctl start result.service
+      runcmd:
+        - chmod +x /root/setup.sh
+        - /root/setup.sh
+
+# ==============================================================================
+# 3. VIRTUAL MACHINES
+# ==============================================================================
+
+- apiVersion: kubevirt.io/v1
+  kind: VirtualMachine
+  metadata:
+    name: voting-redis
+    labels:
+      app: voting-app
+      tier: backend
+      role: queue
+      dr.demojam.com/enabled: 'true'
+      vm.kubevirt.io/name: voting-redis
+  spec:
+    runStrategy: Always
+    template:
+      metadata:
+        labels:
+          app: voting-app
+          tier: backend
+          role: queue
+          vm.kubevirt.io/name: voting-redis
+      spec:
+        domain:
+          devices:
+            disks:
+            - name: rootdisk
+              disk:
+                bus: virtio
+            - name: cloudinitdisk
+              disk:
+                bus: virtio
+            interfaces:
+            - name: default
+              masquerade: {}
+              model: virtio
+          resources:
+            requests:
+              memory: 1Gi
+        networks:
+        - name: default
+          pod: {}
+        volumes:
+        - name: rootdisk
+          dataVolume:
+            name: voting-redis-root
+        - name: cloudinitdisk
+          cloudInitNoCloud:
+            secretRef:
+              name: voting-redis-userdata
+    dataVolumeTemplates:
+    - metadata:
+        name: voting-redis-root
+      spec:
+        sourceRef:
+          kind: DataSource
+          name: ${DATA_SOURCE_NAME}
+          namespace: ${DATA_SOURCE_NAMESPACE}
+        storage:
+          resources:
+            requests:
+              storage: 30Gi
+
+- apiVersion: kubevirt.io/v1
+  kind: VirtualMachine
+  metadata:
+    name: voting-db
+    labels:
+      app: voting-app
+      tier: backend
+      role: database
+      dr.demojam.com/enabled: 'true'
+      vm.kubevirt.io/name: voting-db
+  spec:
+    runStrategy: Always
+    template:
+      metadata:
+        labels:
+          app: voting-app
+          tier: backend
+          role: database
+          vm.kubevirt.io/name: voting-db
+      spec:
+        domain:
+          devices:
+            disks:
+            - name: rootdisk
+              disk:
+                bus: virtio
+            - name: cloudinitdisk
+              disk:
+                bus: virtio
+            - name: data-disk
+              serial: "DBDATA"
+              disk:
+                bus: virtio
+            interfaces:
+            - name: default
+              masquerade: {}
+              model: virtio
+          resources:
+            requests:
+              memory: 1.5Gi
+        networks:
+        - name: default
+          pod: {}
+        volumes:
+        - name: rootdisk
+          dataVolume:
+            name: voting-db-root
+        - name: data-disk
+          dataVolume:
+            name: voting-db-data
+        - name: cloudinitdisk
+          cloudInitNoCloud:
+            secretRef:
+              name: voting-db-userdata
+    dataVolumeTemplates:
+    - metadata:
+        name: voting-db-root
+      spec:
+        sourceRef:
+          kind: DataSource
+          name: ${DATA_SOURCE_NAME}
+          namespace: ${DATA_SOURCE_NAMESPACE}
+        storage:
+          resources:
+            requests:
+              storage: 30Gi
+    - metadata:
+        name: voting-db-data
+      spec:
+        source:
+          blank: {}
+        storage:
+          volumeMode: Block
+          accessModes:
+          - ReadWriteMany
+          resources:
+            requests:
+              storage: 5Gi
+
+- apiVersion: kubevirt.io/v1
+  kind: VirtualMachine
+  metadata:
+    name: voting-worker
+    labels:
+      app: voting-app
+      tier: middleware
+      role: worker
+      dr.demojam.com/enabled: 'true'
+      vm.kubevirt.io/name: voting-worker
+  spec:
+    runStrategy: Always
+    template:
+      metadata:
+        labels:
+          app: voting-app
+          tier: middleware
+          role: worker
+          vm.kubevirt.io/name: voting-worker
+      spec:
+        domain:
+          devices:
+            disks:
+            - name: rootdisk
+              disk:
+                bus: virtio
+            - name: cloudinitdisk
+              disk:
+                bus: virtio
+            interfaces:
+            - name: default
+              masquerade: {}
+              model: virtio
+          resources:
+            requests:
+              memory: 1Gi
+        networks:
+        - name: default
+          pod: {}
+        volumes:
+        - name: rootdisk
+          dataVolume:
+            name: voting-worker-root
+        - name: cloudinitdisk
+          cloudInitNoCloud:
+            secretRef:
+              name: voting-worker-userdata
+    dataVolumeTemplates:
+    - metadata:
+        name: voting-worker-root
+      spec:
+        sourceRef:
+          kind: DataSource
+          name: ${DATA_SOURCE_NAME}
+          namespace: ${DATA_SOURCE_NAMESPACE}
+        storage:
+          resources:
+            requests:
+              storage: 30Gi
+
+- apiVersion: kubevirt.io/v1
+  kind: VirtualMachine
+  metadata:
+    name: voting-vote
+    labels:
+      app: voting-app
+      tier: frontend
+      role: ui-vote
+      dr.demojam.com/enabled: 'true'
+      vm.kubevirt.io/name: voting-vote
+  spec:
+    runStrategy: Always
+    template:
+      metadata:
+        labels:
+          app: voting-app
+          tier: frontend
+          role: ui-vote
+          vm.kubevirt.io/name: voting-vote
+      spec:
+        domain:
+          devices:
+            disks:
+            - name: rootdisk
+              disk:
+                bus: virtio
+            - name: cloudinitdisk
+              disk:
+                bus: virtio
+            interfaces:
+            - name: default
+              masquerade: {}
+              model: virtio
+          resources:
+            requests:
+              memory: 1Gi
+        networks:
+        - name: default
+          pod: {}
+        volumes:
+        - name: rootdisk
+          dataVolume:
+            name: voting-vote-root
+        - name: cloudinitdisk
+          cloudInitNoCloud:
+            secretRef:
+              name: voting-vote-userdata
+    dataVolumeTemplates:
+    - metadata:
+        name: voting-vote-root
+      spec:
+        sourceRef:
+          kind: DataSource
+          name: ${DATA_SOURCE_NAME}
+          namespace: ${DATA_SOURCE_NAMESPACE}
+        storage:
+          resources:
+            requests:
+              storage: 30Gi
+
+- apiVersion: kubevirt.io/v1
+  kind: VirtualMachine
+  metadata:
+    name: voting-result
+    labels:
+      app: voting-app
+      tier: frontend
+      role: ui-result
+      dr.demojam.com/enabled: 'true'
+      vm.kubevirt.io/name: voting-result
+  spec:
+    runStrategy: Always
+    template:
+      metadata:
+        labels:
+          app: voting-app
+          tier: frontend
+          role: ui-result
+          vm.kubevirt.io/name: voting-result
+      spec:
+        domain:
+          devices:
+            disks:
+            - name: rootdisk
+              disk:
+                bus: virtio
+            - name: cloudinitdisk
+              disk:
+                bus: virtio
+            interfaces:
+            - name: default
+              masquerade: {}
+              model: virtio
+          resources:
+            requests:
+              memory: 1Gi
+        networks:
+        - name: default
+          pod: {}
+        volumes:
+        - name: rootdisk
+          dataVolume:
+            name: voting-result-root
+        - name: cloudinitdisk
+          cloudInitNoCloud:
+            secretRef:
+              name: voting-result-userdata
+    dataVolumeTemplates:
+    - metadata:
+        name: voting-result-root
+      spec:
+        sourceRef:
+          kind: DataSource
+          name: ${DATA_SOURCE_NAME}
+          namespace: ${DATA_SOURCE_NAMESPACE}
+        storage:
+          resources:
+            requests:
+              storage: 30Gi
+
+parameters:
+- name: VM_PASSWORD
+  displayName: VM User Password
+  description: "Password for the 'fedora' user"
+  value: "openshift"
+  required: true
+- name: DATA_SOURCE_NAME
+  displayName: OS Image Source
+  description: "Name of the DataSource to clone (e.g. fedora)"
+  value: fedora
+  required: true
+- name: DATA_SOURCE_NAMESPACE
+  displayName: OS Image Namespace
+  description: "Namespace of the DataSource (e.g. openshift-virtualization-os-images)"
+  value: openshift-virtualization-os-images
+  required: true
