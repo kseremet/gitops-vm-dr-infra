@@ -1,0 +1,9 @@
+apiVersion: console.openshift.io/v1
+kind: ConsoleNotification
+metadata:
+  name: banner
+spec:
+  backgroundColor: '#00cc00'
+  color: '#fff'
+  location: BannerTop
+  text: CLS2 - DR TARGET CLUSTER
