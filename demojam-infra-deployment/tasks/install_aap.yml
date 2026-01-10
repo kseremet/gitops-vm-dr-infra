@@ -1,0 +1,91 @@
+---
+- name: "Ensure AAP Namespace Exists ({{ cluster_context }})"
+  kubernetes.core.k8s:
+    context: "{{ cluster_context }}"
+    api_version: v1
+    kind: Namespace
+    name: "{{ aap_namespace }}"
+    state: present
+
+- name: "Ensure AAP OperatorGroup Exists ({{ cluster_context }})"
+  kubernetes.core.k8s:
+    context: "{{ cluster_context }}"
+    definition:
+      apiVersion: operators.coreos.com/v1
+      kind: OperatorGroup
+      metadata:
+        name: ansible-automation-platform-operator
+        namespace: "{{ aap_namespace }}"
+      spec:
+        targetNamespaces:
+          - "{{ aap_namespace }}"
+    state: present
+
+- name: "Ensure AAP Subscription Exists ({{ cluster_context }})"
+  kubernetes.core.k8s:
+    context: "{{ cluster_context }}"
+    definition: "{{ lookup('template', 'templates/aap_subscription.yaml.j2') }}"
+    state: present
+
+- name: "Wait for AAP Subscription to Determine currentCSV"
+  kubernetes.core.k8s_info:
+    context: "{{ cluster_context }}"
+    api_version: operators.coreos.com/v1alpha1
+    kind: Subscription
+    name: "ansible-automation-platform"
+    namespace: "{{ aap_namespace }}"
+  register: aap_sub
+  until: 
+    - aap_sub.resources | length > 0
+    - aap_sub.resources[0].status.currentCSV is defined
+    - aap_sub.resources[0].status.currentCSV | length > 0
+  retries: 60
+  delay: 10
+
+- name: "Set Fact for AAP CSV Name"
+  set_fact:
+    aap_csv_name: "{{ aap_sub.resources[0].status.currentCSV }}"
+
+- name: "Wait for AAP CSV '{{ aap_csv_name }}' to Succeed"
+  kubernetes.core.k8s_info:
+    context: "{{ cluster_context }}"
+    api_version: operators.coreos.com/v1alpha1
+    kind: ClusterServiceVersion
+    name: "{{ aap_csv_name }}"
+    namespace: "{{ aap_namespace }}"
+  register: aap_csv
+  until: 
+    - aap_csv.resources | length > 0
+    - aap_csv.resources[0].status.phase is defined
+    - aap_csv.resources[0].status.phase == "Succeeded"
+  retries: 60
+  delay: 10
+
+- name: "Deploy AAP Controller Instance ({{ cluster_context }})"
+  kubernetes.core.k8s:
+    context: "{{ cluster_context }}"
+    definition: "{{ lookup('template', 'templates/aap_instance.yaml.j2') }}"
+    state: present
+
+- name: "Wait for AAP Instance to be Running ({{ cluster_context }})"
+  kubernetes.core.k8s_info:
+    context: "{{ cluster_context }}"
+    api_version: aap.ansible.com/v1alpha1
+    kind: AnsibleAutomationPlatform
+    name: "{{ aap_instance_name }}"
+    namespace: "{{ aap_namespace }}"
+  register: aap_instance
+  until:
+    - aap_instance.resources | length > 0
+    - aap_instance.resources[0].status is defined
+    - aap_instance.resources[0].status.conditions is defined
+    # Check for Condition Type: Running, Status: True
+    - aap_instance.resources[0].status.conditions | selectattr('type', 'equalto', 'Running') | selectattr('status', 'equalto', 'True') | list | length > 0
+    # Check for Condition Type: Successful, Status: True (Last reconciliation succeeded)
+    - aap_instance.resources[0].status.conditions | selectattr('type', 'equalto', 'Successful') | selectattr('status', 'equalto', 'True') | list | length > 0
+  retries: 120 # AAP deployment can take a while (Postgres, Redis, Web, etc.)
+  delay: 15
+
+- debug:
+    msg: "AAP Deployed Successfully! URL: {{ aap_instance.resources[0].status.URL }}"
+

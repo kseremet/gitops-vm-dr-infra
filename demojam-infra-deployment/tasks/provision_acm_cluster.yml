@@ -1,0 +1,102 @@
+---
+- name: "Create Namespace for {{ cluster_item.name }}"
+  kubernetes.core.k8s:
+    context: "{{ hub_context }}"
+    api_version: v1
+    kind: Namespace
+    name: "{{ cluster_item.name }}"
+    state: present
+
+- name: "Check if ClusterDeployment already exists"
+  kubernetes.core.k8s_info:
+    context: "{{ hub_context }}"
+    api_version: hive.openshift.io/v1
+    kind: ClusterDeployment
+    name: "{{ cluster_item.name }}"
+    namespace: "{{ cluster_item.name }}"
+  register: existing_cd
+
+- name: "Provision New Cluster Configuration"
+  when: existing_cd.resources | length == 0
+  block:
+    # --- 1. Prepare Secrets ---
+    - name: "Fetch Global Pull Secret from Hub"
+      kubernetes.core.k8s_info:
+        context: "{{ hub_context }}"
+        kind: Secret
+        namespace: "openshift-config"
+        name: "pull-secret"
+      register: hub_pull_secret
+
+    - name: "Create Pull Secret for {{ cluster_item.name }}"
+      kubernetes.core.k8s:
+        context: "{{ hub_context }}"
+        definition:
+          apiVersion: v1
+          kind: Secret
+          metadata:
+            name: "{{ cluster_item.name }}-pull-secret"
+            namespace: "{{ cluster_item.name }}"
+          type: kubernetes.io/dockerconfigjson
+          data:
+            .dockerconfigjson: "{{ hub_pull_secret.resources[0].data['.dockerconfigjson'] }}"
+
+    - name: "Generate SSH Keypair for {{ cluster_item.name }}"
+      community.crypto.openssh_keypair:
+        path: "/tmp/ssh_key_{{ cluster_item.name }}"
+        type: rsa
+        size: 4096
+      register: ssh_keypair
+
+    - name: "Create SSH Private Key Secret"
+      kubernetes.core.k8s:
+        context: "{{ hub_context }}"
+        definition:
+          apiVersion: v1
+          kind: Secret
+          metadata:
+            name: "{{ cluster_item.name }}-ssh-private-key"
+            namespace: "{{ cluster_item.name }}"
+          type: Opaque
+          stringData:
+            ssh-privatekey: "{{ lookup('file', ssh_keypair.filename) }}"
+
+    - name: "Create AWS Credentials Secret"
+      kubernetes.core.k8s:
+        context: "{{ hub_context }}"
+        definition:
+          apiVersion: v1
+          kind: Secret
+          metadata:
+            name: "{{ cluster_item.name }}-aws-creds"
+            namespace: "{{ cluster_item.name }}"
+          type: Opaque
+          stringData:
+            aws_access_key_id: "{{ aws_access_key_id }}"
+            aws_secret_access_key: "{{ aws_secret_access_key }}"
+
+    # --- 2. Prepare Install Config ---
+    - name: "Render Install Config"
+      set_fact:
+        install_config_content: "{{ lookup('template', 'templates/install-config.yaml.j2') }}"
+
+    - name: "Create Install Config Secret"
+      kubernetes.core.k8s:
+        context: "{{ hub_context }}"
+        definition:
+          apiVersion: v1
+          kind: Secret
+          metadata:
+            name: "{{ cluster_item.name }}-install-config"
+            namespace: "{{ cluster_item.name }}"
+          type: Opaque
+          data:
+            install-config.yaml: "{{ install_config_content | b64encode }}"
+
+    # --- 3. Create ACM Objects ---
+    - name: "Deploy ACM Cluster Objects (Deployment, MachinePool, Addons)"
+      kubernetes.core.k8s:
+        context: "{{ hub_context }}"
+        definition: "{{ lookup('template', 'templates/acm_cluster_objects.yaml.j2') }}"
+        state: present
+

@@ -1,0 +1,68 @@
+---
+- name: "Enable Mirroring on Remote Cluster"
+  kubernetes.core.k8s:
+    kubeconfig: "{{ dest_kubeconfig }}"
+    kind: CephBlockPool
+    name: "{{ pool_name }}"
+    namespace: "{{ rook_namespace }}"
+    definition:
+      spec:
+        mirroring:
+          enabled: true
+          mode: image
+
+- name: "Wait for Bootstrap Peer Secret in Remote Pool Status"
+  kubernetes.core.k8s_info:
+    kubeconfig: "{{ dest_kubeconfig }}"
+    kind: CephBlockPool
+    name: "{{ pool_name }}"
+    namespace: "{{ rook_namespace }}"
+  register: remote_pool_info
+  until: 
+    - remote_pool_info.resources | length > 0
+    - remote_pool_info.resources[0].status.info is defined
+    - remote_pool_info.resources[0].status.info.rbdMirrorBootstrapPeerSecretName is defined
+  retries: 30
+  delay: 5
+
+- name: "Set Fact for Remote Secret Name"
+  set_fact:
+    remote_secret_name: "{{ remote_pool_info.resources[0].status.info.rbdMirrorBootstrapPeerSecretName }}"
+
+- name: "Fetch the Bootstrap Token Secret from Remote"
+  kubernetes.core.k8s_info:
+    kubeconfig: "{{ dest_kubeconfig }}"
+    kind: Secret
+    name: "{{ remote_secret_name }}"
+    namespace: "{{ rook_namespace }}"
+  register: remote_secret_obj
+
+- name: "Create Peer Secret on Local Cluster"
+  kubernetes.core.k8s:
+    kubeconfig: "{{ src_kubeconfig }}"
+    definition:
+      apiVersion: v1
+      kind: Secret
+      metadata:
+        name: "rbd-remote-peer-secret"
+        namespace: "{{ rook_namespace }}"
+      data:
+        token: "{{ remote_secret_obj.resources[0].data.token }}"
+      stringData:
+        pool: "{{ pool_name }}"
+
+- name: "Enable Mirroring and Add Peer to Local Cluster"
+  kubernetes.core.k8s:
+    kubeconfig: "{{ src_kubeconfig }}"
+    kind: CephBlockPool
+    name: "{{ pool_name }}"
+    namespace: "{{ rook_namespace }}"
+    definition:
+      spec:
+        mirroring:
+          enabled: true
+          mode: image
+          peers:
+            secretNames:
+              - "rbd-remote-peer-secret"
+

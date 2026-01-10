@@ -1,0 +1,84 @@
+---
+apiVersion: hive.openshift.io/v1
+kind: ClusterDeployment
+metadata:
+  name: '{{ cluster_item.name }}'
+  namespace: '{{ cluster_item.name }}'
+  labels:
+    cloud: 'AWS'
+    region: '{{ cluster_item.region }}'
+    vendor: OpenShift
+spec:
+  baseDomain: {{ base_domain }}
+  clusterName: '{{ cluster_item.name }}'
+  controlPlaneConfig:
+    servingCertificates: {}
+  installAttemptsLimit: 1
+  installed: false
+  platform:
+    aws:
+      credentialsSecretRef:
+        name: {{ cluster_item.name }}-aws-creds
+      region: {{ cluster_item.region }}
+  provisioning:
+    installConfigSecretRef:
+      name: {{ cluster_item.name }}-install-config
+    sshPrivateKeySecretRef:
+      name: {{ cluster_item.name }}-ssh-private-key
+    imageSetRef:
+      name: img4.20.8-multi-appsub # Using the reference provided
+  pullSecretRef:
+    name: {{ cluster_item.name }}-pull-secret
+---
+apiVersion: cluster.open-cluster-management.io/v1
+kind: ManagedCluster
+metadata:
+  labels:
+    cloud: Amazon
+    region: {{ cluster_item.region }}
+    name: '{{ cluster_item.name }}'
+    vendor: OpenShift
+  name: '{{ cluster_item.name }}'
+spec:
+  hubAcceptsClient: true
+---
+apiVersion: hive.openshift.io/v1
+kind: MachinePool
+metadata:
+  name: {{ cluster_item.name }}-worker
+  namespace: '{{ cluster_item.name }}'
+spec:
+  clusterDeploymentRef:
+    name: '{{ cluster_item.name }}'
+  name: worker
+  platform:
+    aws:
+      rootVolume:
+        iops: {{ cluster_item.worker_root_volume_iops }}
+        size: {{ cluster_item.worker_root_volume_size }}
+        type: {{ cluster_item.worker_root_volume_type }}
+      type: {{ cluster_item.worker_instance_type }}
+      zones:
+      - {{ cluster_item.zone }}
+  replicas: 0
+---
+apiVersion: agent.open-cluster-management.io/v1
+kind: KlusterletAddonConfig
+metadata:
+  name: '{{ cluster_item.name }}'
+  namespace: '{{ cluster_item.name }}'
+spec:
+  clusterName: '{{ cluster_item.name }}'
+  clusterNamespace: '{{ cluster_item.name }}'
+  clusterLabels:
+    cloud: Amazon
+    vendor: OpenShift
+  applicationManager:
+    enabled: true
+  policyController:
+    enabled: true
+  searchCollector:
+    enabled: true
+  certPolicyController:
+    enabled: true
+

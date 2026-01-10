@@ -1,0 +1,95 @@
+---
+- name: "Ensure GitOps Operator Namespace Exists ({{ cluster_context }})"
+  kubernetes.core.k8s:
+    context: "{{ cluster_context }}"
+    api_version: v1
+    kind: Namespace
+    name: "{{ gitops_namespace }}"
+    state: present
+
+- name: "Enable Cluster Monitoring on GitOps Namespace ({{ cluster_context }})"
+  kubernetes.core.k8s:
+    context: "{{ cluster_context }}"
+    kind: Namespace
+    name: "{{ gitops_namespace }}"
+    definition:
+      metadata:
+        labels:
+          openshift.io/cluster-monitoring: "true"
+    state: present
+
+- name: "Ensure GitOps OperatorGroup Exists ({{ cluster_context }})"
+  kubernetes.core.k8s:
+    context: "{{ cluster_context }}"
+    definition:
+      apiVersion: operators.coreos.com/v1
+      kind: OperatorGroup
+      metadata:
+        name: openshift-gitops-operator
+        namespace: "{{ gitops_namespace }}"
+      spec:
+        upgradeStrategy: Default
+    state: present
+
+- name: "Ensure GitOps Subscription Exists ({{ cluster_context }})"
+  kubernetes.core.k8s:
+    context: "{{ cluster_context }}"
+    definition: "{{ lookup('template', 'templates/gitops_subscription.yaml.j2') }}"
+    state: present
+
+- name: "Wait for GitOps Subscription to Determine currentCSV"
+  kubernetes.core.k8s_info:
+    context: "{{ cluster_context }}"
+    api_version: operators.coreos.com/v1alpha1
+    kind: Subscription
+    name: "openshift-gitops-operator"
+    namespace: "{{ gitops_namespace }}"
+  register: gitops_sub
+  until: 
+    - gitops_sub.resources | length > 0
+    - gitops_sub.resources[0].status.currentCSV is defined
+    - gitops_sub.resources[0].status.currentCSV | length > 0
+  retries: 60
+  delay: 10
+
+- name: "Set Fact for GitOps CSV Name"
+  set_fact:
+    gitops_csv_name: "{{ gitops_sub.resources[0].status.currentCSV }}"
+
+- name: "Wait for GitOps CSV '{{ gitops_csv_name }}' to Succeed"
+  kubernetes.core.k8s_info:
+    context: "{{ cluster_context }}"
+    api_version: operators.coreos.com/v1alpha1
+    kind: ClusterServiceVersion
+    name: "{{ gitops_csv_name }}"
+    namespace: "{{ gitops_namespace }}"
+  register: gitops_csv
+  until: 
+    - gitops_csv.resources | length > 0
+    - gitops_csv.resources[0].status.phase is defined
+    - gitops_csv.resources[0].status.phase == "Succeeded"
+  retries: 60
+  delay: 10
+
+# The OpenShift GitOps Operator AUTOMATICALLY creates a 'Cluster' ArgoCD instance 
+# in the 'openshift-gitops' namespace. We wait for it to be ready.
+
+- name: "Wait for Default ArgoCD Instance ({{ gitops_instance_namespace }})"
+  kubernetes.core.k8s_info:
+    context: "{{ cluster_context }}"
+    api_version: argoproj.io/v1alpha1
+    kind: ArgoCD
+    name: "openshift-gitops"
+    namespace: "{{ gitops_instance_namespace }}"
+  register: argocd_instance
+  until:
+    - argocd_instance.resources | length > 0
+    - argocd_instance.resources[0].status is defined
+    - argocd_instance.resources[0].status.phase is defined
+    - argocd_instance.resources[0].status.phase == "Available"
+  retries: 60
+  delay: 15
+
+- debug:
+    msg: "OpenShift GitOps Deployed Successfully! Server Host: {{ argocd_instance.resources[0].status.host }}"
+

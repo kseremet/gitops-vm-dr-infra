@@ -1,0 +1,62 @@
+---
+- name: "Wait for Cluster {{ cluster_item.name }} to be Provisioned (approx 40-60m)"
+  kubernetes.core.k8s_info:
+    context: "{{ hub_context }}"
+    api_version: hive.openshift.io/v1
+    kind: ClusterDeployment
+    name: "{{ cluster_item.name }}"
+    namespace: "{{ cluster_item.name }}"
+  register: cd_status
+  until:
+    # Safety: Ensure the module actually returned resources before checking them
+    - cd_status.resources is defined
+    - cd_status.resources | length > 0
+    # Safety: Ensure status field exists
+    - cd_status.resources[0].status is defined
+    - cd_status.resources[0].status.conditions is defined
+    # Check for Condition Type: Provisioned, Status: True
+    - cd_status.resources[0].status.conditions | selectattr('type', 'equalto', 'Provisioned') | selectattr('status', 'equalto', 'True') | list | length > 0
+    # Ensure metadata is present
+    - cd_status.resources[0].spec.clusterMetadata is defined
+    - cd_status.resources[0].spec.clusterMetadata.adminKubeconfigSecretRef is defined
+  retries: 80 
+  delay: 60 # Check every minute for 80 minutes
+
+- name: "Set Facts for Cluster Info"
+  set_fact:
+    cluster_api_url: "{{ cd_status.resources[0].status.apiURL }}"
+    kubeconfig_secret_name: "{{ cd_status.resources[0].spec.clusterMetadata.adminKubeconfigSecretRef.name }}"
+    password_secret_name: "{{ cd_status.resources[0].spec.clusterMetadata.adminPasswordSecretRef.name }}"
+
+- name: "Fetch Admin Password Secret"
+  kubernetes.core.k8s_info:
+    context: "{{ hub_context }}"
+    kind: Secret
+    name: "{{ password_secret_name }}"
+    namespace: "{{ cluster_item.name }}"
+  register: admin_password_secret
+
+- name: "Fetch Kubeconfig Secret"
+  kubernetes.core.k8s_info:
+    context: "{{ hub_context }}"
+    kind: Secret
+    name: "{{ kubeconfig_secret_name }}"
+    namespace: "{{ cluster_item.name }}"
+  register: admin_kubeconfig_secret
+
+- name: "Display Cluster Credentials"
+  debug:
+    msg:
+      - "Cluster: {{ cluster_item.name }}"
+      - "API URL: {{ cluster_api_url }}"
+      - "Console URL: {{ cd_status.resources[0].status.webConsoleURL | default('Not available yet') }}"
+      - "Username: admin"
+      - "Password: {{ admin_password_secret.resources[0].data.password | b64decode }}"
+      - "Kubeconfig saved to: ./kubeconfig_{{ cluster_item.name }}"
+
+- name: "Save Kubeconfig to Local File"
+  copy:
+    content: "{{ admin_kubeconfig_secret.resources[0].data.kubeconfig | b64decode }}"
+    dest: "./kubeconfig_{{ cluster_item.name }}"
+    mode: '0600'
+

@@ -1,0 +1,37 @@
+---
+# --- 1. Wait for AddOn (Hub Operation) ---
+- name: "Wait for Submariner AddOn to be Available for {{ cluster_item.name }}"
+  kubernetes.core.k8s_info:
+    context: "{{ hub_context }}"
+    api_version: addon.open-cluster-management.io/v1alpha1
+    kind: ManagedClusterAddOn
+    name: "submariner"
+    namespace: "{{ cluster_item.name }}"
+  register: sub_addon
+  until:
+    - sub_addon.resources | length > 0
+    - sub_addon.resources[0].status is defined
+    - sub_addon.resources[0].status.conditions is defined
+    - sub_addon.resources[0].status.conditions | selectattr('type', 'equalto', 'Available') | selectattr('status', 'equalto', 'True') | list | length > 0
+  retries: 60
+  delay: 30
+
+# --- 2. Wait for Gateway Connection (Managed Cluster Operation) ---
+- name: "Wait for Submariner Gateway Connection on {{ cluster_item.name }}"
+  vars:
+    managed_kubeconfig: "./kubeconfig_{{ cluster_item.name }}"
+  kubernetes.core.k8s_info:
+    kubeconfig: "{{ managed_kubeconfig }}"
+    api_version: submariner.io/v1
+    kind: Gateway
+    namespace: "submariner-operator"
+  register: sub_gateway
+  until:
+    - sub_gateway.resources | length > 0
+    - sub_gateway.resources[0].status is defined
+    - sub_gateway.resources[0].status.connections is defined
+    # Check if ANY connection in the list has status == 'connected'
+    - sub_gateway.resources[0].status.connections | selectattr('status', 'equalto', 'connected') | list | length > 0
+  retries: 60 # Wait up to 30 mins
+  delay: 30
+

@@ -1,0 +1,15 @@
+apiVersion: aap.ansible.com/v1alpha1
+kind: AnsibleAutomationPlatform
+metadata:
+  name: {{ aap_instance_name }}
+  namespace: {{ aap_namespace }}
+spec:
+  controller:
+    disabled: false
+  eda:
+    disabled: false
+  hub:
+    disabled: true
+  lightspeed:
+    disabled: true
+

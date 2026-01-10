@@ -1,0 +1,47 @@
+---
+- name: "Ensure CNV Namespace and Subscription exist"
+  kubernetes.core.k8s:
+    kubeconfig: "{{ managed_kubeconfig }}"
+    definition: "{{ lookup('template', 'templates/cnv_subscription.yaml.j2') }}"
+    state: present
+
+- name: "Wait for Subscription to determine currentCSV"
+  kubernetes.core.k8s_info:
+    kubeconfig: "{{ managed_kubeconfig }}"
+    api_version: operators.coreos.com/v1alpha1
+    kind: Subscription
+    name: "hco-operatorhub"
+    namespace: "{{ cnv_namespace }}"
+  register: cnv_sub
+  until: 
+    - cnv_sub.resources | length > 0
+    - cnv_sub.resources[0].status.currentCSV is defined
+    - cnv_sub.resources[0].status.currentCSV | length > 0
+  retries: 60
+  delay: 10
+
+- name: "Set Fact for CSV Name"
+  set_fact:
+    cnv_csv_name: "{{ cnv_sub.resources[0].status.currentCSV }}"
+
+- name: "Wait for CSV '{{ cnv_csv_name }}' to Succeed"
+  kubernetes.core.k8s_info:
+    kubeconfig: "{{ managed_kubeconfig }}"
+    api_version: operators.coreos.com/v1alpha1
+    kind: ClusterServiceVersion
+    name: "{{ cnv_csv_name }}"
+    namespace: "{{ cnv_namespace }}"
+  register: cnv_csv
+  until: 
+    - cnv_csv.resources | length > 0
+    - cnv_csv.resources[0].status.phase is defined
+    - cnv_csv.resources[0].status.phase == "Succeeded"
+  retries: 60
+  delay: 10
+
+- name: "Deploy HyperConverged Custom Resource"
+  kubernetes.core.k8s:
+    kubeconfig: "{{ managed_kubeconfig }}"
+    definition: "{{ lookup('template', 'templates/cnv_hyperconverged.yaml.j2') }}"
+    state: present
+

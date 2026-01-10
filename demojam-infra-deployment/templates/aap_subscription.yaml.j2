@@ -1,0 +1,12 @@
+apiVersion: operators.coreos.com/v1alpha1
+kind: Subscription
+metadata:
+  name: ansible-automation-platform
+  namespace: {{ aap_namespace }}
+spec:
+  channel: '{{ aap_channel }}'
+  installPlanApproval: {{ aap_approval }}
+  name: ansible-automation-platform-operator
+  source: redhat-operators
+  sourceNamespace: openshift-marketplace
+

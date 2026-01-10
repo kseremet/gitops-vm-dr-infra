@@ -1,0 +1,7 @@
+apiVersion: hco.kubevirt.io/v1beta1
+kind: HyperConverged
+metadata:
+  name: kubevirt-hyperconverged
+  namespace: {{ cnv_namespace }}
+spec:
+  # Empty spec allows the operator to apply reasonable defaults

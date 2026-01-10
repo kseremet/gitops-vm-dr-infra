@@ -1,0 +1,51 @@
+---
+# --- 1. Label Gateway Node (Managed Cluster Operation) ---
+- name: "Label Gateway Node on Managed Cluster {{ cluster_item.name }}"
+  vars:
+    managed_kubeconfig: "./kubeconfig_{{ cluster_item.name }}"
+  block:
+    - name: "Get Nodes from {{ cluster_item.name }}"
+      kubernetes.core.k8s_info:
+        kubeconfig: "{{ managed_kubeconfig }}"
+        kind: Node
+      register: cluster_nodes
+
+    - name: "Apply Submariner Gateway Label to Nodes"
+      kubernetes.core.k8s:
+        kubeconfig: "{{ managed_kubeconfig }}"
+        kind: Node
+        name: "{{ item.metadata.name }}"
+        definition:
+          metadata:
+            labels:
+              submariner.io/gateway: "true"
+      loop: "{{ cluster_nodes.resources }}"
+      loop_control:
+        label: "{{ item.metadata.name }}"
+
+# --- 2. Broker Setup (Hub Operation - Idempotent) ---
+- name: "Ensure Submariner Broker Exists on Hub"
+  vars:
+    _broker_ns: "{{ broker_namespace | default('default-broker') }}"
+  block:
+    - name: "Ensure Broker Namespace Exists"
+      kubernetes.core.k8s:
+        context: "{{ hub_context }}"
+        api_version: v1
+        kind: Namespace
+        name: "{{ _broker_ns }}"
+        state: present
+    
+    - name: "Deploy Submariner Broker"
+      kubernetes.core.k8s:
+        context: "{{ hub_context }}"
+        definition: "{{ lookup('template', 'templates/submariner_broker.yaml.j2') }}"
+        state: present
+
+# --- 3. Cluster AddOn Deployment (Hub Operation) ---
+- name: "Deploy Submariner AddOn and Config for {{ cluster_item.name }}"
+  kubernetes.core.k8s:
+    context: "{{ hub_context }}"
+    definition: "{{ lookup('template', 'templates/submariner_cluster_config.yaml.j2') }}"
+    state: present
+

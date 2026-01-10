@@ -1,0 +1,114 @@
+---
+- name: Deploy Full DR Environment (Provision -> Connect -> Storage -> Virt)
+  hosts: localhost
+  gather_facts: false
+  
+  vars_files:
+    - vars/cluster_definitions.yml
+
+  vars:
+    hub_context: "hub"
+    base_domain: "example.com"
+    
+    # Submariner Config
+    broker_namespace: "default-broker"
+    broker_name: "submariner-broker"
+    gateway_instance_type: "c5d.large"
+    natt_port: 4500
+    cable_driver: "libreswan"
+
+    # Rook Config
+    rook_version_tag: "release-1.18"
+    rook_namespace: "rook-ceph"
+    backing_storage_class: "gp3-csi"
+    target_pool_name: "cephblockpool"
+    
+    # CNV (Virt) Config
+    cnv_namespace: "openshift-cnv"
+    cnv_channel: "stable"
+    cnv_approval: "Automatic"
+
+  tasks:
+    # ==========================================
+    # PHASE 1: CLUSTER PROVISIONING (ACM/Hive)
+    # ==========================================
+    - name: "Phase 1: Submit Provisioning Requests"
+      include_tasks: tasks/provision_acm_cluster.yml
+      loop: "{{ clusters }}"
+      loop_control:
+        loop_var: cluster_item
+
+    - name: "Phase 1: Wait for Clusters to be Ready"
+      include_tasks: tasks/wait_for_cluster_provisioning.yml
+      loop: "{{ clusters }}"
+      loop_control:
+        loop_var: cluster_item
+
+    # ==========================================
+    # PHASE 2: CONNECTIVITY (Submariner)
+    # ==========================================
+    
+    # Parallel Submission: Label nodes & Deploy AddOns on ALL clusters first
+    - name: "Phase 2a: Configure Submariner (Label Nodes & Submit AddOns)"
+      include_tasks: tasks/deploy_submariner_submit.yml
+      loop: "{{ clusters }}"
+      loop_control:
+        loop_var: cluster_item
+
+    # Parallel Waiting: Now wait for connections to establish
+    - name: "Phase 2b: Wait for Submariner Connectivity"
+      include_tasks: tasks/deploy_submariner_wait.yml
+      loop: "{{ clusters }}"
+      loop_control:
+        loop_var: cluster_item
+
+    # ==========================================
+    # PHASE 3: STORAGE (Rook Ceph)
+    # ==========================================
+    - name: "Phase 3: Deploy Rook Ceph on Clusters"
+      include_tasks: tasks/install_rook_cluster.yml
+      vars:
+        # Pass the local kubeconfig file path we downloaded in Phase 1
+        managed_kubeconfig: "./kubeconfig_{{ cluster_item.name }}"
+      loop: "{{ clusters }}"
+      loop_control:
+        loop_var: cluster_item
+
+    # ==========================================
+    # PHASE 4: STORAGE PEERING (RBD Mirroring)
+    # ==========================================
+    # Peer Cluster 1 -> Cluster 2
+    - name: "Phase 4: Peer {{ clusters[0].name }} -> {{ clusters[1].name }}"
+      include_tasks: tasks/configure_peering.yml
+      vars:
+        src_kubeconfig: "./kubeconfig_{{ clusters[0].name }}"
+        dest_kubeconfig: "./kubeconfig_{{ clusters[1].name }}"
+        pool_name: "{{ target_pool_name }}"
+
+    # Peer Cluster 2 -> Cluster 1
+    - name: "Phase 4: Peer {{ clusters[1].name }} -> {{ clusters[0].name }}"
+      include_tasks: tasks/configure_peering.yml
+      vars:
+        src_kubeconfig: "./kubeconfig_{{ clusters[1].name }}"
+        dest_kubeconfig: "./kubeconfig_{{ clusters[0].name }}"
+        pool_name: "{{ target_pool_name }}"
+
+    # ==========================================
+    # PHASE 5: VIRTUALIZATION (OpenShift Virt)
+    # ==========================================
+    
+    - name: "Phase 5a: Submit OpenShift Virt Installation Requests"
+      include_tasks: tasks/install_cnv_submit.yml
+      vars:
+        managed_kubeconfig: "./kubeconfig_{{ cluster_item.name }}"
+      loop: "{{ clusters }}"
+      loop_control:
+        loop_var: cluster_item
+
+    - name: "Phase 5b: Wait for OpenShift Virt to be Ready"
+      include_tasks: tasks/install_cnv_wait.yml
+      vars:
+        managed_kubeconfig: "./kubeconfig_{{ cluster_item.name }}"
+      loop: "{{ clusters }}"
+      loop_control:
+        loop_var: cluster_item

@@ -1,0 +1,28 @@
+---
+apiVersion: addon.open-cluster-management.io/v1alpha1
+kind: ManagedClusterAddOn
+metadata:
+  name: submariner
+  namespace: {{ cluster_item.name }}
+spec:
+  installNamespace: submariner-operator
+---
+apiVersion: submarineraddon.open-cluster-management.io/v1alpha1
+kind: SubmarinerConfig
+metadata:
+  name: submariner
+  namespace: {{ cluster_item.name }}
+spec:
+  loadBalancerEnable: true
+  gatewayConfig:
+    gateways: 0
+    aws:
+      instanceType: {{ gateway_instance_type }}
+  IPSecNATTPort: {{ natt_port }}
+  airGappedDeployment: false
+  NATTEnable: true
+  cableDriver: {{ cable_driver }}
+  globalCIDR: ""
+  credentialsSecret:
+    name: {{ cluster_item.name }}-aws-creds
+

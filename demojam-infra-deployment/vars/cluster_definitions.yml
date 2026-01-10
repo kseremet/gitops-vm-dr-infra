@@ -1,0 +1,35 @@
+clusters:
+  - name: "cls1"
+    region: "us-east-1"
+    zone: "us-east-1a"
+    machine_cidr: "10.0.0.0/16"
+    cluster_network_cidr: "10.132.0.0/14"
+    service_network_cidr: "172.31.0.0/16"
+    # Master Node Config
+    master_instance_type: "m5.2xlarge"
+    master_root_volume_type: "io1"
+    master_root_volume_size: 300
+    master_root_volume_iops: 4000
+    # Worker Node Config
+    worker_instance_type: "c5n.metal"
+    worker_root_volume_type: "io1"
+    worker_root_volume_size: 300
+    worker_root_volume_iops: 2000
+    
+  - name: "cls2"
+    region: "us-east-2"
+    zone: "us-east-2a"
+    machine_cidr: "10.1.0.0/16"      # Non-overlapping
+    cluster_network_cidr: "10.136.0.0/14" # Non-overlapping
+    service_network_cidr: "172.32.0.0/16" # Non-overlapping
+    # Master Node Config
+    master_instance_type: "m5.2xlarge"
+    master_root_volume_type: "io1"
+    master_root_volume_size: 300
+    master_root_volume_iops: 4000
+    # Worker Node Config
+    worker_instance_type: "c5n.metal"
+    worker_root_volume_type: "io1"
+    worker_root_volume_size: 300
+    worker_root_volume_iops: 2000
+

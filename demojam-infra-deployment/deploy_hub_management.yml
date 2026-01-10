@@ -1,0 +1,33 @@
+---
+- name: Deploy Hub Management Tools (AAP & GitOps)
+  hosts: localhost
+  gather_facts: false
+  vars:
+    # --- Configuration ---
+    hub_context: "hub"  # Make sure you have a context named 'hub' in your kubeconfig
+
+    # --- AAP Config ---
+    aap_namespace: "ansible-automation-platform"
+    aap_channel: "stable-2.6"
+    aap_approval: "Automatic"
+    aap_instance_name: "aap-hub"
+
+    # --- GitOps Config ---
+    gitops_namespace: "openshift-gitops-operator" # Operator namespace (new default for 1.10+)
+    gitops_instance_namespace: "openshift-gitops" # Where the default ArgoCD instance lives
+    gitops_channel: "latest" 
+    gitops_approval: "Automatic"
+
+  tasks:
+    # --- 1. Deploy Ansible Automation Platform ---
+    - name: "Deploy Ansible Automation Platform (AAP)"
+      include_tasks: tasks/install_aap.yml
+      vars:
+        cluster_context: "{{ hub_context }}"
+
+    # --- 2. Deploy OpenShift GitOps (ArgoCD) ---
+    - name: "Deploy OpenShift GitOps"
+      include_tasks: tasks/install_gitops.yml
+      vars:
+        cluster_context: "{{ hub_context }}"
+

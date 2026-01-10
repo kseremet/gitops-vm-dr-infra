@@ -1,0 +1,128 @@
+---
+# We use 'managed_kubeconfig' variable passed from the main playbook
+- name: "Check if CephCluster is already deployed"
+  kubernetes.core.k8s_info:
+    kubeconfig: "{{ managed_kubeconfig }}"
+    api_version: ceph.rook.io/v1
+    kind: CephCluster
+    name: rook-ceph
+    namespace: "{{ rook_namespace }}"
+  register: existing_ceph_cluster
+  ignore_errors: true
+
+- name: "Install Rook Core Components"
+  when: existing_ceph_cluster.failed | default(false) or existing_ceph_cluster.resources | length == 0
+  block:
+    - name: "Create Rook CRDs and Common"
+      kubernetes.core.k8s:
+        kubeconfig: "{{ managed_kubeconfig }}"
+        state: present
+        definition: "{{ lookup('url', item, split_lines=False) }}"
+      loop:
+        - "https://raw.githubusercontent.com/rook/rook/{{ rook_version_tag }}/deploy/examples/crds.yaml"
+        - "https://raw.githubusercontent.com/rook/rook/{{ rook_version_tag }}/deploy/examples/common.yaml"
+
+    - name: "Deploy Rook and CSI Operator ({{ cluster_context }})"
+      kubernetes.core.k8s:
+        kubeconfig: "{{ managed_kubeconfig }}"
+        state: present
+        definition: "{{ lookup('url', item, split_lines=False) }}"
+      loop:
+        - "https://raw.githubusercontent.com/rook/rook/{{ rook_version_tag }}/deploy/examples/csi-operator.yaml"
+        - "https://raw.githubusercontent.com/rook/rook/{{ rook_version_tag }}/deploy/examples/operator-openshift.yaml"
+
+    - name: "Wait for Rook Operator"
+      kubernetes.core.k8s_info:
+        kubeconfig: "{{ managed_kubeconfig }}"
+        kind: Pod
+        namespace: "{{ rook_namespace }}"
+        label_selectors:
+          - app=rook-ceph-operator
+      register: operator_pod
+      until: "operator_pod.resources | length > 0 and operator_pod.resources[0].status.phase == 'Running'"
+      retries: 30
+      delay: 10
+
+    - name: "Deploy SNO CephCluster"
+      kubernetes.core.k8s:
+        kubeconfig: "{{ managed_kubeconfig }}"
+        definition: "{{ lookup('template', 'templates/rook_cluster_sno.yaml.j2') }}"
+
+    - name: "Wait for CephCluster to be Ready"
+      kubernetes.core.k8s_info:
+        kubeconfig: "{{ managed_kubeconfig }}"
+        api_version: ceph.rook.io/v1
+        kind: CephCluster
+        name: rook-ceph
+        namespace: "{{ rook_namespace }}"
+      register: ceph_cluster
+      until: 
+        - ceph_cluster.resources | length > 0
+        - ceph_cluster.resources[0].status is defined
+        - (ceph_cluster.resources[0].status.phase | default('') == 'Ready') or (ceph_cluster.resources[0].status.message | default('') == 'Cluster created successfully')
+      retries: 80
+      delay: 30
+
+- name: "Deploy Rook Toolbox"
+  kubernetes.core.k8s:
+    kubeconfig: "{{ managed_kubeconfig }}"
+    state: present
+    definition: "{{ lookup('url', 'https://raw.githubusercontent.com/rook/rook/{{ rook_version_tag }}/deploy/examples/toolbox.yaml', split_lines=False) }}"
+
+- name: "Deploy StorageClass and Pool"
+  kubernetes.core.k8s:
+    kubeconfig: "{{ managed_kubeconfig }}"
+    definition: "{{ lookup('template', 'templates/sno_storageclass.yaml.j2') }}"
+
+# --- Dynamic Default StorageClass Logic ---
+- name: "Get all StorageClasses"
+  kubernetes.core.k8s_info:
+    kubeconfig: "{{ managed_kubeconfig }}"
+    kind: StorageClass
+  register: all_scs
+
+- name: "Remove Default Annotation from non-Rook StorageClasses"
+  kubernetes.core.k8s:
+    kubeconfig: "{{ managed_kubeconfig }}"
+    kind: StorageClass
+    name: "{{ item.metadata.name }}"
+    definition:
+      metadata:
+        annotations:
+          storageclass.kubernetes.io/is-default-class: "false"
+  loop: "{{ all_scs.resources }}"
+  loop_control:
+    label: "{{ item.metadata.name }}"
+  when:
+    - item.metadata.annotations is defined
+    - item.metadata.annotations['storageclass.kubernetes.io/is-default-class'] | default('false') == 'true'
+    - item.metadata.name != 'rook-ceph-block'
+
+- name: "Set Rook StorageClass as Default"
+  kubernetes.core.k8s:
+    kubeconfig: "{{ managed_kubeconfig }}"
+    kind: StorageClass
+    name: "rook-ceph-block"
+    definition:
+      metadata:
+        annotations:
+          storageclass.kubernetes.io/is-default-class: "true"
+
+# --- Mirror Daemon ---
+- name: "Deploy RBD Mirror Daemon"
+  kubernetes.core.k8s:
+    kubeconfig: "{{ managed_kubeconfig }}"
+    definition: "{{ lookup('template', 'templates/rbd_mirror.yaml.j2') }}"
+
+- name: "Wait for RBD Mirror Pod"
+  kubernetes.core.k8s_info:
+    kubeconfig: "{{ managed_kubeconfig }}"
+    kind: Pod
+    namespace: "{{ rook_namespace }}"
+    label_selectors:
+      - app=rook-ceph-rbd-mirror
+  register: mirror_pod
+  until: "mirror_pod.resources | length > 0 and mirror_pod.resources[0].status.phase == 'Running'"
+  retries: 30
+  delay: 10
+

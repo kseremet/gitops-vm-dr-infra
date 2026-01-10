@@ -1,0 +1,20 @@
+---
+- name: "Wait for HyperConverged to be Available on {{ cluster_item.name }}"
+  kubernetes.core.k8s_info:
+    kubeconfig: "{{ managed_kubeconfig }}"
+    api_version: hco.kubevirt.io/v1beta1
+    kind: HyperConverged
+    name: "kubevirt-hyperconverged"
+    namespace: "{{ cnv_namespace }}"
+  register: hco_cr
+  until:
+    - hco_cr.resources | length > 0
+    - hco_cr.resources[0].status is defined
+    - hco_cr.resources[0].status.conditions is defined
+    # Condition: Available=True
+    - hco_cr.resources[0].status.conditions | selectattr('type', 'equalto', 'Available') | selectattr('status', 'equalto', 'True') | list | length > 0
+    # Condition: Degraded=False
+    - hco_cr.resources[0].status.conditions | selectattr('type', 'equalto', 'Degraded') | selectattr('status', 'equalto', 'False') | list | length > 0
+  retries: 100 # Increased timeout (100 * 15s = 25 mins) as this can take time
+  delay: 15
+
