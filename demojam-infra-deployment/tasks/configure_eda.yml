@@ -1,0 +1,48 @@
+---
+# --- 1. Create Decision Environment ---
+- name: "Create Decision Environments on EDA"
+  include_role:
+    name: infra.aap_configuration.eda_decision_environments
+  vars:
+    aap_hostname: "{{ eda_hostname }}"
+    aap_username: "{{ eda_username }}"
+    aap_password: "{{ eda_password }}"
+    aap_validate_certs: "{{ eda_validate_certs }}"
+    # eda_decision_environments passed implicitly
+
+# --- 2. Create Controller Credential (Username/Password) ---
+# We define the inputs dynamically here to use the discovered variables
+- name: "Define Controller Credential for EDA"
+  set_fact:
+    eda_credentials_list:
+      - name: "aap-admin"
+        description: "AAP Controller Admin Credentials"
+        credential_type: "Red Hat Ansible Automation Platform"
+        organization: "Default"
+        inputs:
+          host: "{{ controller_hostname }}"
+          username: "{{ controller_username }}"
+          password: "{{ controller_password }}"
+          verify_ssl: "{{ controller_validate_certs }}"
+
+- name: "Create Controller Credential in EDA"
+  include_role:
+    name: infra.aap_configuration.eda_credentials
+  vars:
+    aap_hostname: "{{ eda_hostname }}"
+    aap_username: "{{ eda_username }}"
+    aap_password: "{{ eda_password }}"
+    aap_validate_certs: "{{ eda_validate_certs }}"
+    eda_credentials: "{{ eda_credentials_list }}"
+
+# --- 3. Create Rulebook Activation ---
+- name: "Create Rulebook Activations on EDA"
+  include_role:
+    name: infra.aap_configuration.eda_rulebook_activations
+  vars:
+    aap_hostname: "{{ eda_hostname }}"
+    aap_username: "{{ eda_username }}"
+    aap_password: "{{ eda_password }}"
+    aap_validate_certs: "{{ eda_validate_certs }}"
+    # eda_rulebook_activations passed implicitly from vars file
+

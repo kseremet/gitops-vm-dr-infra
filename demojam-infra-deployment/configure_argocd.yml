@@ -1,0 +1,80 @@
+---
+- name: Configure ArgoCD (Register Managed Clusters)
+  hosts: localhost
+  gather_facts: false
+  
+  vars_files:
+    - vars/cluster_definitions.yml
+
+  vars:
+    hub_context: "hub"
+    argocd_namespace: "openshift-gitops"
+    
+    # These will be populated dynamically
+    argocd_server: ""
+    argocd_password: ""
+    argocd_token: ""
+
+  pre_tasks:
+    # --- Discover ArgoCD URL & Credentials ---
+    - name: "Get ArgoCD Server Route"
+      kubernetes.core.k8s_info:
+        context: "{{ hub_context }}"
+        api_version: route.openshift.io/v1
+        kind: Route
+        name: openshift-gitops-server
+        namespace: "{{ argocd_namespace }}"
+      register: argocd_route
+
+    - name: "Fail if ArgoCD Route not found"
+      fail:
+        msg: "ArgoCD Route not found in {{ argocd_namespace }}"
+      when: argocd_route.resources | length == 0
+
+    - name: "Set ArgoCD Server URL"
+      set_fact:
+        argocd_server: "https://{{ argocd_route.resources[0].spec.host }}"
+
+    - name: "Get ArgoCD Admin Password"
+      kubernetes.core.k8s_info:
+        context: "{{ hub_context }}"
+        kind: Secret
+        name: openshift-gitops-cluster
+        namespace: "{{ argocd_namespace }}"
+      register: argocd_secret
+
+    - name: "Set ArgoCD Password"
+      set_fact:
+        argocd_password: "{{ argocd_secret.resources[0].data['admin.password'] | b64decode }}"
+
+    # --- Authenticate to ArgoCD (Get Token) ---
+    - name: "Get ArgoCD Auth Token"
+      ansible.builtin.uri:
+        url: "{{ argocd_server }}/api/v1/session"
+        method: POST
+        body_format: json
+        body:
+          username: "admin"
+          password: "{{ argocd_password }}"
+        validate_certs: false
+      register: argocd_auth_response
+
+    - name: "Set ArgoCD Token"
+      set_fact:
+        argocd_token: "{{ argocd_auth_response.json.token }}"
+
+  tasks:
+    # --- 1. Fetch Cluster Credentials ---
+    - name: "Fetch Cluster Credentials"
+      include_tasks: tasks/fetch_cluster_credentials.yml
+      loop: "{{ clusters }}"
+      loop_control:
+        loop_var: cluster_item
+
+    # --- 2. Register Clusters (API) ---
+    - name: "Register Clusters in ArgoCD"
+      include_tasks: tasks/register_argocd_clusters.yml
+      loop: "{{ clusters }}"
+      loop_control:
+        loop_var: cluster_item
+

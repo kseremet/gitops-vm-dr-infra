@@ -1,0 +1,33 @@
+---
+- name: "Debug Variables for {{ cluster_item.name }}"
+  debug:
+    msg: 
+      - "Cluster URL: {{ lookup('vars', cluster_item.name + '_url') }}"
+      - "Cluster Token Defined: {{ lookup('vars', cluster_item.name + '_token') is defined }}"
+      - "Cluster Token: {{ lookup('vars', cluster_item.name + '_token') }}"
+
+- name: "Register {{ cluster_item.name }} via ArgoCD API (Upsert)"
+  vars:
+    _cluster_url: "{{ lookup('vars', cluster_item.name + '_url') }}"
+    _cluster_token: "{{ lookup('vars', cluster_item.name + '_token') }}"
+    _cluster_ca_b64: "{{ lookup('vars', cluster_item.name + '_ca_cert') }}"
+  ansible.builtin.uri:
+    url: "{{ argocd_server }}/api/v1/clusters?upsert=true"
+    method: POST
+    headers:
+      Authorization: "Bearer {{ argocd_token }}"
+    validate_certs: false
+    body_format: json
+    body:
+      name: "{{ cluster_item.name }}"
+      server: "{{ _cluster_url }}"
+      config:
+        #bearerToken: "{{ _cluster_token }}"
+        username: kubeadmin
+        password: "BvV7q-udGEW-dAsGI-ErXiW"
+        tlsClientConfig:
+          insecure: true
+  register: cluster_reg_response
+  changed_when: cluster_reg_response.status == 200
+
+- debug: var=cluster_reg_response

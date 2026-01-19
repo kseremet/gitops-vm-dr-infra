@@ -1,0 +1,15 @@
+---
+# --- Controller & EDA Project Definition ---
+# Shared definition: EDA role aliases 'scm_url' to 'url', so this works for both.
+controller_projects:
+  - name: "GitOps VM DR Automation"
+    description: "Infrastructure Automation for VM DR"
+    organization: "Default"
+    scm_type: "git"
+    scm_url: "https://github.com/kseremet/gitops-vm-dr-infra.git"
+    scm_branch: "main"
+    scm_clean: true
+    scm_delete_on_update: true
+    scm_update_on_launch: true
+    # No credential needed for public repo
+

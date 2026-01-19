@@ -1,0 +1,149 @@
+---
+- name: Configure AAP Control Plane
+  hosts: localhost
+  gather_facts: false
+  
+  vars_files:
+    - vars/credential_types.yml
+    - vars/projects.yml
+    - vars/cluster_definitions.yml
+    - vars/job_templates.yml
+    - vars/workflow_templates.yml
+    - vars/eda_configuration.yml
+
+  vars:
+    hub_context: "hub"
+    aap_namespace: "ansible-automation-platform"
+    
+    # Dynamic vars
+    controller_hostname: ""
+    controller_username: "admin"
+    controller_password: ""
+    controller_validate_certs: false
+    
+    eda_hostname: ""
+    eda_username: "admin"
+    eda_password: ""
+    eda_validate_certs: false
+
+  pre_tasks:
+    # -------------------------------------------------------
+    # 1. DISCOVER AUTOMATION CONTROLLER
+    # -------------------------------------------------------
+    - name: "Discover AutomationController CR"
+      kubernetes.core.k8s_info:
+        context: "{{ hub_context }}"
+        api_version: automationcontroller.ansible.com/v1beta1
+        kind: AutomationController
+        namespace: "{{ aap_namespace }}"
+      register: aap_cr_list
+
+    - name: "Fail if no AAP Controller found"
+      fail:
+        msg: "No AutomationController found in namespace '{{ aap_namespace }}'"
+      when: aap_cr_list.resources | length == 0
+
+    - name: "Set Controller Facts"
+      set_fact:
+        aap_controller_name: "{{ aap_cr_list.resources[0].metadata.name }}"
+        controller_hostname: "{{ aap_cr_list.resources[0].status.URL }}"
+        controller_admin_password_secret: "{{ aap_cr_list.resources[0].status.adminPasswordSecret }}"
+
+    - name: "Fetch Controller Admin Password"
+      kubernetes.core.k8s_info:
+        context: "{{ hub_context }}"
+        kind: Secret
+        namespace: "{{ aap_namespace }}"
+        name: "{{ controller_admin_password_secret }}"
+      register: aap_password_secret
+
+    - name: "Set Controller Password"
+      set_fact:
+        controller_password: "{{ aap_password_secret.resources[0].data.password | b64decode }}"
+
+    # -------------------------------------------------------
+    # 2. DISCOVER EVENT DRIVEN ANSIBLE (EDA)
+    # -------------------------------------------------------
+    - name: "Discover EDA CR"
+      kubernetes.core.k8s_info:
+        context: "{{ hub_context }}"
+        api_version: eda.ansible.com/v1alpha1
+        kind: EDA
+        namespace: "{{ aap_namespace }}"
+      register: eda_cr_list
+      ignore_errors: true
+
+    - name: "Fail if no EDA instance found"
+      fail:
+        msg: "No EDA instance found in namespace '{{ aap_namespace }}'. Cannot configure EDA."
+      when: eda_cr_list.resources | length == 0
+
+    - name: "Set EDA URL"
+      set_fact:
+        eda_hostname: "{{ eda_cr_list.resources[0].status.URL }}"
+        eda_admin_password_secret: "{{ eda_cr_list.resources[0].status.adminPasswordSecret }}"
+
+    - name: "Fetch EDA Admin Password"
+      kubernetes.core.k8s_info:
+        context: "{{ hub_context }}"
+        kind: Secret
+        namespace: "{{ aap_namespace }}"
+        name: "{{ eda_admin_password_secret }}"
+      register: eda_password_secret
+
+    - name: "Set EDA Password"
+      set_fact:
+        eda_password: "{{ eda_password_secret.resources[0].data.password | b64decode }}"
+
+    - debug:
+        msg: 
+          - "Controller URL: {{ controller_hostname }}"
+          - "EDA URL: {{ eda_hostname }}"
+
+  tasks:
+    # --- 1. Credential Types ---
+    - name: "Configure Custom Credential Types"
+      include_tasks: tasks/configure_credential_types.yml
+
+    # --- 2. Create OCP Service Accounts & Tokens (CRITICAL) ---
+    - name: "Create Service Accounts on Clusters"
+      include_tasks: tasks/create_ocp_service_accounts.yml
+      loop: "{{ clusters }}"
+      loop_control:
+        loop_var: cluster_item
+
+    # --- 3. Credentials (Clusters) ---
+    - name: "Configure Cluster Credentials"
+      include_tasks: tasks/configure_credentials.yml
+
+    # --- 4. Projects ---
+    - name: "Configure Projects"
+      include_tasks: tasks/configure_projects.yml
+
+    # --- 5. SSH Credential (NEW) ---
+    - name: "Configure GitOps SSH Credential"
+      include_tasks: tasks/configure_ssh_credential.yml
+
+    # --- 6. Job Templates (NEW) ---
+    - name: "Configure Job Templates"
+      include_tasks: tasks/configure_job_templates.yml
+
+    # --- 7. EDA Configuration (NEW) ---
+    - name: "Configure EDA (Decision Env & Rulebooks)"
+      include_tasks: tasks/configure_eda.yml
+
+  post_tasks:
+    - name: "Read Public Key for Display"
+      set_fact:
+        public_key_content: "{{ lookup('file', '/tmp/ssh_key_cls1.pub') }}"
+
+    - name: "ACTION REQUIRED: Add this Deploy Key to your Git Repo"
+      debug:
+        msg: 
+          - "===================================================================="
+          - "PLEASE ADD THE FOLLOWING SSH PUBLIC KEY TO YOUR GIT REPO DEPLOY KEYS"
+          - "Repo: https://github.com/kseremet/gitops-vm-dr-manifests.git"
+          - "===================================================================="
+          - "{{ public_key_content }}"
+          - "===================================================================="
+

@@ -1,0 +1,35 @@
+---
+controller_workflows:
+  - name: GitOps Based VM DR Automation - Failover Workflow
+    description: Prepares storage on destination and declares failover in Git
+    extra_vars:
+      target_cluster_name: "cls2"
+      vm_selector: ''
+    survey_enabled: false
+    allow_simultaneous: false
+    ask_variables_on_launch: true
+    ask_inventory_on_launch: false
+    ask_scm_branch_on_launch: false
+    ask_limit_on_launch: false
+    organization:
+      name: Default
+    workflow_nodes:
+      - all_parents_must_converge: false
+        identifier: Prepare Storage
+        unified_job_template:
+          name: GitOps Based VM DR Automation - Failover Storage
+          type: job_template
+          organization:
+            name: Default
+        related:
+          success_nodes:
+            - workflow_job_template:
+                name: GitOps Based VM DR Automation - Failover Workflow
+              identifier: Activate Failover in Git
+      - all_parents_must_converge: false
+        identifier: Activate Failover in Git
+        unified_job_template:
+          name: GitOps Based VM DR Automation - Activate Failover in Git
+          type: job_template
+          organization:
+            name: Default

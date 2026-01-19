@@ -1,0 +1,75 @@
+---
+controller_templates:
+  - name: "GitOps Based VM DR Automation - Reconciler"
+    description: "Reconciles VM state between clusters"
+    job_type: "run"
+    inventory: "Demo Inventory"
+    project: "GitOps VM DR Automation"
+    playbook: "ansible/playbooks/reconcile_all_vms.yml"
+    credentials:
+      - "cls1-admin" # OpenShift Credential
+      - "ssh-key"    # Machine Credential (for Git)
+    extra_vars:
+      target_cluster_name: "cls2"
+    concurrent_jobs_enabled: false
+
+  # 2. Failover Storage
+  - name: "GitOps Based VM DR Automation - Failover Storage"
+    description: "Executes Storage Failover to DR Cluster (cls2)"
+    job_type: "run"
+    inventory: "Demo Inventory"
+    project: "GitOps VM DR Automation"
+    playbook: "ansible/playbooks/failover.yaml"
+    credentials:
+      - "cls2-admin" # Failover targets DR cluster
+      - "ssh-key"    # Machine Credential (for Git)
+    extra_vars:
+      target_cluster_name: "cls2"
+      vm_selector: ''
+    concurrent_jobs_enabled: false
+    ask_variables_on_launch: true
+
+  # 3. Failback
+  - name: "GitOps Based VM DR Automation - Activate Failover in Git"
+    description: "Declare failover in Git so that ArgoCD powers on VMs"
+    job_type: "run"
+    inventory: "Demo Inventory"
+    project: "GitOps VM DR Automation"
+    playbook: "ansible/playbooks/activate_failover_in_git.yaml"
+    credentials:
+      - "ssh-key"    # Machine Credential (for Git)
+    extra_vars:
+      target_cluster_name: "cls2"
+      vm_selector: ''
+    concurrent_jobs_enabled: false
+    ask_variables_on_launch: true
+
+  # 4. Garbage Collector
+  - name: "GitOps Based VM DR Automation - Garbage Collector"
+    description: "Cleans up resources for deleted VMs"
+    job_type: "run"
+    inventory: "Demo Inventory"
+    project: "GitOps VM DR Automation"
+    playbook: "ansible/playbooks/garbage_collector.yaml"
+    credentials:
+      - "cls1-admin" # OpenShift Credential
+      - "ssh-key"    # Machine Credential (for Git)
+    extra_vars:
+      target_cluster_name: "cls2"
+    concurrent_jobs_enabled: false
+
+  # 5. Process VM Update Event
+  - name: "GitOps Based VM DR Automation - Process VM Update Event"
+    description: "Process spec changes of the existing VMs"
+    job_type: "run"
+    inventory: "Demo Inventory"
+    project: "GitOps VM DR Automation"
+    playbook: "ansible/playbooks/export_and_clean_resources.yaml"
+    credentials:
+      - "cls1-admin" # OpenShift Credential
+      - "ssh-key"    # Machine Credential (for Git)
+    extra_vars:
+      target_cluster_name: "cls2"
+    concurrent_jobs_enabled: false
+    ask_variables_on_launch: true
+

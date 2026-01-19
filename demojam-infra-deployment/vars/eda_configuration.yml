@@ -1,0 +1,39 @@
+---
+# --- Decision Environment ---
+eda_decision_environments:
+  - name: "demo-de"
+    description: "Custom Decision Environment to use in Demos"
+    image_url: "quay.io/koray/eda-de-openshift-aap25:0.3.0"
+    organization: "Default"
+
+# --- Controller Credential (Username/Password) ---
+# Note: The actual values (host/user/pass) will be injected dynamically in the task file,
+# but the definition lives here.
+eda_credentials:
+  - name: "aap-admin"
+    description: "AAP Controller Admin Credentials"
+    credential_type: "Red Hat Ansible Automation Platform"
+    organization: "Default"
+    # Inputs will be populated in the task via set_fact or Jinja templating
+    # inputs:
+    #   host: "{{ controller_hostname }}"
+    #   username: "{{ controller_username }}"
+    #   password: "{{ controller_password }}"
+    #   verify_ssl: false
+
+
+# --- Rulebook Activation ---
+eda_rulebook_activations:
+  - name: "GitOps Based VM DR Automation - VM Monitor"
+    description: "Monitors VM events for DR synchronization"
+    project: "GitOps VM DR Automation"
+    rulebook: "vm_monitor.yaml"
+    decision_environment: "demo-de"
+    organization: "Default"
+    eda_credentials:
+      - cls1-admin
+      - aap-admin 
+    restart_policy: "on-failure"
+    k8s_service_name: "dr-vm-monitor"
+    enabled: false
+
